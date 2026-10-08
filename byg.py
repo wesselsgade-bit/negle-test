@@ -107,6 +107,8 @@ h1{{font-size:1.6rem}} li{{margin:4px 0}}
 <p class="test"><strong>Dette er en testside.</strong> {NAVN} er opdigtet, og tiderne er testdata.
 Siden bruges til at undersøge, om AI-assistenter kan læse ledige tider. Der kan ikke bookes.</p>
 
+<p><a href="ai.html"><strong>Book via din AI-assistent →</strong></a></p>
+
 <h1>{NAVN} – negle og vipper i {OMRAADE}</h1>
 <p>Hjemmeklinik i Brøndby. Den præcise adresse oplyses ved booking.</p>
 
