@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Bygger testsiden for en opdigtet negleartist.
-
-Ledige tider genereres deterministisk for de næste 14 dage, så siden kan
-genbygges dagligt (fx af en GitHub Action) og altid vise aktuelle tider.
-Alt står som ren tekst i HTML'en, så AI-agenter kan læse det uden JavaScript.
-"""
+"""Bygger testsiden for en opdigtet negleartist."""
 import datetime as dt
 import json
-import random
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -25,24 +19,34 @@ BEHANDLINGER = [
 UGEDAGE = ["mandag", "tirsdag", "onsdag", "torsdag", "fredag", "lørdag", "søndag"]
 MAANEDER = ["januar", "februar", "marts", "april", "maj", "juni", "juli",
             "august", "september", "oktober", "november", "december"]
-# Arbejdstider som hobby-artist: hverdage efter arbejde, lørdag formiddag.
 VINDUER = {0: (17, 21), 1: (17, 21), 2: (17, 21), 3: (16, 21), 4: (15, 20), 5: (10, 15)}
 
 
-def dansk_dato(d: dt.date) -> str:
+def dansk_dato(d):
     return f"{UGEDAGE[d.weekday()]} {d.day}. {MAANEDER[d.month - 1]} {d.year}"
 
 
-def ledige_tider(d: dt.date) -> list[str]:
+def ledige_tider(d):
+    """Samme algoritme som forbindelsen (server.ts), så tiderne stemmer overens."""
     if d.weekday() not in VINDUER:
         return []
     start, slut = VINDUER[d.weekday()]
-    rng = random.Random(d.toordinal())  # samme tider hver gang for samme dag
     alle = [f"{h:02d}:{m:02d}" for h in range(start, slut) for m in (0, 30)]
-    return sorted(rng.sample(alle, k=min(len(alle), rng.randint(1, 4))))
+    s = int(d.strftime("%Y%m%d")) & 0xFFFFFFFF
+
+    def rng():
+        nonlocal s
+        s = (s * 1664525 + 1013904223) & 0xFFFFFFFF
+        return s / 2**32
+
+    k = min(len(alle), 2 + int(rng() * 4))
+    valgt = set()
+    while len(valgt) < k:
+        valgt.add(alle[int(rng() * len(alle))])
+    return sorted(valgt)
 
 
-def main() -> None:
+def main():
     nu = dt.datetime.now(TZ)
     idag = nu.date()
     dage = [idag + dt.timedelta(days=i) for i in range(14)]
@@ -64,8 +68,7 @@ def main() -> None:
             dag_html.append(f"<li><strong>{label}:</strong> ingen ledige tider</li>")
             dag_tekst.append(f"- {label}: ingen ledige tider")
 
-    beh_html = "".join(
-        f"<li>{n} – {p} kr – {m} minutter</li>" for n, p, m in BEHANDLINGER)
+    beh_html = "".join(f"<li>{n} – {p} kr – {m} minutter</li>" for n, p, m in BEHANDLINGER)
     beh_tekst = "\n".join(f"- {n}: {p} kr, {m} minutter" for n, p, m in BEHANDLINGER)
     opdateret = nu.strftime("%d.%m.%Y kl. %H:%M")
 
@@ -79,8 +82,7 @@ def main() -> None:
                     "postalCode": "2605", "addressCountry": "DK"},
         "makesOffer": [
             {"@type": "Offer", "price": p, "priceCurrency": "DKK",
-             "itemOffered": {"@type": "Service", "name": n,
-                             "duration": f"PT{m}M"}}
+             "itemOffered": {"@type": "Service", "name": n, "duration": f"PT{m}M"}}
             for n, p, m in BEHANDLINGER],
         "potentialAction": {"@type": "ReserveAction",
                             "description": "Ledige starttider (testdata)",
