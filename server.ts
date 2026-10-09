@@ -27,7 +27,7 @@ const VINDUER: Record<number, [number, number]> = {
 // ---------- Lager (Deno KV hvis tilgængelig, ellers hukommelse) ----------
 type Booking = {
   kode: string; dato: string; tid: string; behandling: string; navn: string;
-  telefon?: string; oprettet: string;
+  telefon?: string; oprettet: string; token?: string;
 };
 let kv: Deno.Kv | null = null;
 try { kv = await Deno.openKv(); } catch { kv = null; }
@@ -45,7 +45,8 @@ async function gemBooking(b: Booking): Promise<boolean> {
   if (kv) {
     const key = ["booking", b.dato, b.tid];
     const res = await kv.atomic().check({ key, versionstamp: null }).set(key, b)
-      .set(["kode", b.kode], [b.dato, b.tid]).commit();
+      .set(["kode", b.kode], [b.dato, b.tid])
+      .set(["token", b.token ?? ""], b.kode).commit();
     return res.ok;
   }
   if ([...mem.values()].some((x) => x.dato === b.dato && x.tid === b.tid)) return false;
@@ -65,6 +66,26 @@ async function sletBooking(kode: string): Promise<Booking | null> {
   mem.delete(kode);
   return b;
 }
+
+async function findBookingViaToken(token: string): Promise<Booking | null> {
+  if (!/^[a-f0-9]{24}$/.test(token)) return null;
+  if (kv) {
+    const k = await kv.get<string>(["token", token]);
+    if (!k.value) return null;
+    const ref = await kv.get<[string, string]>(["kode", k.value]);
+    if (!ref.value) return null;
+    return (await kv.get<Booking>(["booking", ref.value[0], ref.value[1]])).value;
+  }
+  return [...mem.values()].find((b) => b.token === token) ?? null;
+}
+async function sletViaToken(token: string): Promise<Booking | null> {
+  const b = await findBookingViaToken(token);
+  if (!b) return null;
+  const slettet = await sletBooking(b.kode);
+  if (kv) await kv.delete(["token", token]);
+  return slettet;
+}
+let ORIGIN = "https://lyngblomst.wesselsgade-bit.deno.net";
 
 // ---------- Tid og ledige tider ----------
 function nuIKbh(): { dato: string; tid: string } {
@@ -203,14 +224,19 @@ async function kald(navn: string, a: Record<string, unknown>) {
       return tekst(`Kl. ${tid} ${danskDato(dato)} er ikke ledig. Ledige tider den dag: ${ledige.join(", ") || "ingen"}.`, true);
     }
     const kode = "LB-" + crypto.randomUUID().replaceAll("-", "").slice(0, 4).toUpperCase();
+    const token = crypto.randomUUID().replaceAll("-", "").slice(0, 24);
     const ok = await gemBooking({
-      kode, dato, tid, behandling: b.id, navn: kunde,
+      kode, token, dato, tid, behandling: b.id, navn: kunde,
       telefon: typeof a.telefon === "string" ? a.telefon.slice(0, 20) : undefined,
       oprettet: new Date().toISOString(),
     });
     if (!ok) return tekst("Tiden blev taget lige før. Vælg en anden tid.", true);
     return tekst(`Booket! ${b.navn} hos ${NAVN}, ${danskDato(dato)} kl. ${tid} (${b.minutter} min, ${b.pris} kr).\n` +
-      `Kunde: ${kunde}. Bookingkode: ${kode}.\nAdresse: hjemmeklinik i Brøndby – den præcise adresse sendes af artisten.\n${TEST}`);
+      `Kunde: ${kunde}. Bookingkode: ${kode}.\n` +
+      `Se eller aflys bookingen: ${ORIGIN}/booking/${token}\n` +
+      `Adresse: hjemmeklinik i Brøndby – den præcise adresse sendes af artisten.\n` +
+      `Hvis du lægger aftalen i kundens kalender, så skriv bookingkoden og linket til at se eller aflyse i noten, ` +
+      `og at aftalen er booket hos ${NAVN} via en AI-assistent.\n${TEST}`);
   }
   if (navn === "aflys_booking") {
     const kode = String(a.bookingkode ?? "").trim().toUpperCase();
@@ -274,6 +300,7 @@ async function side(): Promise<string> {
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
+  ORIGIN = url.origin.replace(/^http:/, "https:");
   if (url.pathname === "/mcp") {
     if (req.method === "GET" || req.method === "DELETE") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
     if (req.method !== "POST") return new Response(null, { status: 405 });
@@ -285,6 +312,19 @@ Deno.serve(async (req) => {
     const res = (await Promise.all(batch.map(haandter))).filter((x) => x !== null);
     if (res.length === 0) return new Response(null, { status: 202 });
     return Response.json(Array.isArray(body) ? res : res[0]);
+  }
+  const m = url.pathname.match(/^\/booking\/([a-f0-9]{24})$/);
+  if (m) {
+    const html = (krop: string) => new Response(`<!doctype html><html lang="da"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Din booking – ${NAVN}</title><style>body{font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:20px 16px;line-height:1.5;color:#222;background:#fff}.test{background:#fff3cd;border:1px solid #e0c060;padding:10px 12px;border-radius:8px;font-size:.9rem}button{width:100%;padding:14px;border:0;border-radius:12px;background:#b8476b;color:#fff;font-size:1rem;font-weight:600}</style></head><body><p class="test">Testside. ${NAVN} er opdigtet.</p>${krop}</body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+    if (req.method === "POST") {
+      const b = await sletViaToken(m[1]);
+      if (!b) return html(`<h1>Bookingen findes ikke</h1><p>Den er måske allerede aflyst.</p>`);
+      return html(`<h1>Aflyst</h1><p>Din tid ${danskDato(b.dato)} kl. ${b.tid} er aflyst og ledig igen. Husk at slette aftalen i din kalender.</p>`);
+    }
+    const b = await findBookingViaToken(m[1]);
+    if (!b) return html(`<h1>Bookingen findes ikke</h1><p>Den er måske allerede aflyst.</p>`);
+    const beh = BEHANDLINGER.find((x) => x.id === b.behandling);
+    return html(`<h1>Din booking</h1><p><strong>${beh?.navn ?? b.behandling}</strong><br>${danskDato(b.dato)} kl. ${b.tid}<br>${beh?.pris ?? ""} kr, betales hos artisten<br>Bookingkode: ${b.kode}</p><form method="post"><button type="submit">Aflys bookingen</button></form>`);
   }
   if (url.pathname === "/llms.txt") {
     const nu = nuIKbh();
