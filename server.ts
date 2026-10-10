@@ -26,7 +26,7 @@
 //   GET|POST|PUT /admin/saloner[/<id>]   administration (kræver ADMIN_TOKEN)
 
 const TZ = "Europe/Copenhagen";
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 const env = (k: string) => Deno.env.get(k) ?? "";
 const BRAND = env("BRAND") || "Bookbar (test)";
 // Den ene offentlige adresse. Alt andet (fx den gamle deno.net-adresse) viderestilles hertil – undtagen /mcp, så installerede forbindelser virker videre.
@@ -173,8 +173,8 @@ async function kget<T>(k: unknown[]): Promise<T | null> {
   if (kv) return (await kv.get<T>(k as Deno.KvKey)).value;
   return (mem.get(memKey(k)) as T) ?? null;
 }
-async function kset(k: unknown[], v: unknown): Promise<void> {
-  if (kv) await kv.set(k as Deno.KvKey, v);
+async function kset(k: unknown[], v: unknown, expireIn?: number): Promise<void> {
+  if (kv) await kv.set(k as Deno.KvKey, v, expireIn && expireIn > 0 ? { expireIn } : undefined);
   else mem.set(memKey(k), v);
 }
 async function kdel(k: unknown[]): Promise<void> {
@@ -219,9 +219,10 @@ type Haendelse = {
   pris?: number; kilde?: string; dageFrem?: number; antal?: number; omraade?: string; grund?: string;
 };
 type Ctx = { klient: string; nySession?: string };
+const LOG_GEMMES_DAGE = 395; // ca. 13 måneder (se /privatliv)
 async function log(h: Omit<Haendelse, "t">): Promise<void> {
   const t = new Date().toISOString();
-  try { await kset(["log", t + "-" + crypto.randomUUID().slice(0, 6)], { t, ...h }); } catch { /* loggen må aldrig vælte en booking */ }
+  try { await kset(["log", t + "-" + crypto.randomUUID().slice(0, 6)], { t, ...h }, LOG_GEMMES_DAGE * 86400000); } catch { /* loggen må aldrig vælte en booking */ }
 }
 const dageFra = (dato: string) => Math.round((lokalMs(dato, "12:00") - lokalMs(nuIKbh().dato, "12:00")) / 86400000);
 function klientFraUA(ua: string): string {
@@ -249,9 +250,13 @@ async function klientForRequest(req: Request): Promise<string> {
   }
   return klientFraUA(req.headers.get("user-agent") ?? "");
 }
+// Opbevaring (se /privatliv): en booking slettes automatisk 30 dage efter selve tiden.
+const BOOKING_GEMMES_DAGE = 30;
 async function gemBooking(b: Booking) {
-  await kset(["booking", b.kode], b);
-  await kset(["token", b.token], b.kode);
+  const udloeb = lokalMs(b.dato, b.tid) + (b.minutter + BOOKING_GEMMES_DAGE * 24 * 60) * 60000 - Date.now();
+  const ms = Math.max(udloeb, 86400000);
+  await kset(["booking", b.kode], b, ms);
+  await kset(["token", b.token], b.kode, ms);
 }
 const findKode = (kode: string) => kget<Booking>(["booking", kode]);
 async function findToken(token: string): Promise<Booking | null> {
@@ -791,7 +796,7 @@ label{display:block;margin:10px 0 4px;font-weight:600}input,select{width:100%;pa
 .tider input:checked+span{background:var(--accent);color:#fff;border-color:var(--accent)}.tider input:focus-visible+span{outline:2px solid var(--accent)}
 button{width:100%;margin-top:16px;padding:14px;border:0;border-radius:12px;background:var(--accent);color:#fff;font-size:1rem;font-weight:600;cursor:pointer}`;
 const html = (titel: string, krop: string, ekstra = "", status = 200) => new Response(
-  `<!doctype html><html lang="da"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${ekstra}<title>${esc(titel)}</title><style>${CSS}</style></head><body>${krop}</body></html>`,
+  `<!doctype html><html lang="da"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${ekstra}<title>${esc(titel)}</title><style>${CSS}</style></head><body>${krop}<footer class="muted" style="margin:32px 0 8px;font-size:.85rem;border-top:1px solid var(--line);padding-top:12px"><a href="/privatliv">Privatlivspolitik</a> · <a href="/privacy" lang="en">Privacy policy</a></footer></body></html>`,
   { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 const testBanner = (s?: Salon) => (s ? s.test : true) ? `<p class="test"><strong>Test.</strong> ${s ? `${esc(s.navn)} er opdigtet.` : "Saloner markeret som test er opdigtede."}</p>` : "";
 
@@ -867,6 +872,91 @@ async function aiSide(url: URL): Promise<Response> {
 try{const q=qrcode(0,'M');q.addData(${JSON.stringify(selv)});q.make();document.getElementById('qr').src=q.createDataURL(8,4)}catch(e){}</script>`, `<style>${AI_CSS}</style>`);
 }
 const aiKort = (s?: Salon | null) => `<div class="kort"><h2 style="margin-top:0">Næste gang: spørg bare din AI</h2><p class="muted">Tilføj ${esc(BRAND.replace(/ \(test\)$/, ""))} til Claude én gang, så kan du booke${s ? ` hos ${esc(s.navn)}` : ""} ved at skrive eller sige det. Del gerne linket med en veninde.</p><p><a href="/ai${s ? "?salon=" + s.id : ""}"><strong>Book via din AI →</strong></a></p></div>`;
+
+// ---------- Privatlivspolitik (/privatliv og /privacy) ----------
+// Teksten skal passe til det, koden faktisk gør. Ret begge, hvis du ændrer dataene.
+const KONTAKT = env("KONTAKT_EMAIL") ?? "kontakt@bookbar.dk";
+const PRIVATLIV_OPDATERET = "10. oktober 2026";
+const PRIVACY_UPDATED = "10 October 2026";
+function privatlivSide(sprog: "da" | "en"): Response {
+  const k = `<a href="mailto:${esc(KONTAKT)}">${esc(KONTAKT)}</a>`;
+  if (sprog === "en") return html(`${BRAND} – privacy policy`, `<div lang="en">
+<h1>Privacy policy</h1>
+<p class="muted">Last updated ${PRIVACY_UPDATED}. <a href="/privatliv" lang="da">Dansk udgave</a> (the Danish version applies if the two differ).</p>
+<p class="test"><strong>Test phase.</strong> ${esc(BRAND)} is under development. Salons marked as test salons are fictional.</p>
+
+<h2>Who we are</h2>
+<p>${esc(BRAND)} lets you find treatments, prices and free times at independent salons and book a time – on bookbar.dk or through an AI assistant such as ChatGPT or Claude. ${esc(BRAND)} is run by Torben Quaade, a private individual in Copenhagen, Denmark, who is the data controller. Contact: ${k}.</p>
+
+<h2>What we collect and why</h2>
+<ul>
+<li><strong>When you book:</strong> your name, your phone number if you give it, the salon, treatment, date and time, and whether you booked on our website or through an AI assistant. We use this to make the booking, to show it to you and to let you cancel it. Legal basis: performing the booking you ask for (GDPR art. 6(1)(b)).</li>
+<li><strong>The salon gets your booking:</strong> the booking, with your name and phone number if given, is written into the salon's own calendar so the salon knows you are coming. From then on the salon is responsible for its calendar.</li>
+<li><strong>When you search or look up times:</strong> we keep an anonymous event log: what kind of lookup it was, salon, category, treatment, price, how many days ahead, which assistant asked (for example "ChatGPT" or "Claude"), and up to 40 characters of free-text search words. The log has no names, phone numbers, IP addresses, booking codes or account information. We use it to see what people look for and to improve the service. Legal basis: our legitimate interest (art. 6(1)(f)). Please do not write personal information in search words.</li>
+<li><strong>Connection sessions:</strong> when an AI assistant connects, we store a random session number and the assistant's name for 7 days, so we know which assistant sent a request.</li>
+</ul>
+<p>We do <strong>not</strong> receive your chat history or conversation with the AI assistant – only the information the assistant sends to our tools (for example the salon, treatment, time and your name when you book). We do not ask for your location, payment details, passwords or ID numbers. We do not use cookies for tracking or advertising, and we do not sell or share your data for marketing.</p>
+
+<h2>How long we keep it</h2>
+<ul>
+<li>Bookings are deleted automatically 30 days after the booked time, and right away if you cancel.</li>
+<li>The anonymous event log is deleted automatically after about 13 months.</li>
+<li>Connection sessions are deleted after 7 days.</li>
+<li>The salon keeps the appointment in its own calendar according to its own rules.</li>
+</ul>
+
+<h2>Who processes the data</h2>
+<ul>
+<li><strong>Deno Land Inc.</strong> (USA) hosts our server and database. During the test phase the database is located in the USA. We will move it to the EU before the first real salon joins.</li>
+<li><strong>Google</strong> (Google Calendar) stores the salon's calendar where the booking is written.</li>
+<li><strong>The AI assistant you use</strong> (for example OpenAI or Anthropic) handles your conversation under its own privacy policy.</li>
+</ul>
+
+<h2>Your rights and choices</h2>
+<p>You can cancel a booking at any time with the link you receive when you book, or by asking your AI assistant to cancel it with your booking code – the booking is then deleted. You have the right to access, correct and delete your data, to object to our use of it and to data portability. Write to ${k}. You can also complain to the Danish Data Protection Agency (Datatilsynet, datatilsynet.dk).</p>
+
+<h2>Changes</h2>
+<p>If we change how we handle data, we update this page and the date at the top.</p>
+</div>`);
+
+  return html(`${BRAND} – privatlivspolitik`, `
+<h1>Privatlivspolitik</h1>
+<p class="muted">Sidst opdateret ${PRIVATLIV_OPDATERET}. <a href="/privacy" lang="en">English version</a>.</p>
+<p class="test"><strong>Testfase.</strong> ${esc(BRAND)} er under opbygning. Saloner markeret som test er opdigtede.</p>
+
+<h2>Hvem vi er</h2>
+<p>${esc(BRAND)} gør det muligt at finde behandlinger, priser og ledige tider hos uafhængige saloner og booke en tid – på bookbar.dk eller gennem en AI-assistent som ChatGPT eller Claude. ${esc(BRAND)} drives af Torben Quaade, privatperson i København, som er dataansvarlig. Kontakt: ${k}.</p>
+
+<h2>Hvad vi indsamler, og hvorfor</h2>
+<ul>
+<li><strong>Når du booker:</strong> dit navn, dit telefonnummer hvis du oplyser det, salon, behandling, dato og tidspunkt, og om du bookede på vores side eller gennem en AI-assistent. Vi bruger det til at lave bookingen, vise den for dig og lade dig aflyse den. Grundlag: at gennemføre den booking, du beder om (databeskyttelsesforordningen art. 6, stk. 1, litra b).</li>
+<li><strong>Salonen får din booking:</strong> bookingen skrives med dit navn og eventuelt telefonnummer ind i salonens egen kalender, så salonen ved, at du kommer. Derfra er salonen ansvarlig for sin kalender.</li>
+<li><strong>Når du søger eller ser tider:</strong> vi fører en anonym hændelseslog: hvilken slags opslag, salon, kategori, behandling, pris, hvor mange dage frem, hvilken assistent der spurgte (fx "ChatGPT" eller "Claude") og højst 40 tegn af fritekst-søgeord. Loggen indeholder ikke navne, telefonnumre, IP-adresser, bookingkoder eller kontooplysninger. Vi bruger den til at se, hvad folk leder efter, og til at forbedre tjenesten. Grundlag: vores legitime interesse (art. 6, stk. 1, litra f). Skriv venligst ikke personlige oplysninger i søgeord.</li>
+<li><strong>Forbindelser:</strong> når en AI-assistent forbinder sig, gemmer vi et tilfældigt sessionsnummer og assistentens navn i 7 dage, så vi ved, hvilken assistent der spørger.</li>
+</ul>
+<p>Vi modtager <strong>ikke</strong> din chathistorik eller samtale med AI-assistenten – kun de oplysninger, assistenten sender til vores værktøjer (fx salon, behandling, tidspunkt og dit navn, når du booker). Vi spørger ikke efter din position, betalingsoplysninger, adgangskoder eller cpr-nummer. Vi bruger ikke cookies til sporing eller annoncer, og vi sælger eller deler ikke dine data til markedsføring.</p>
+
+<h2>Hvor længe vi gemmer</h2>
+<ul>
+<li>Bookinger slettes automatisk 30 dage efter den bookede tid – og med det samme, hvis du aflyser.</li>
+<li>Den anonyme hændelseslog slettes automatisk efter ca. 13 måneder.</li>
+<li>Forbindelser (sessioner) slettes efter 7 dage.</li>
+<li>Salonen gemmer aftalen i sin egen kalender efter sine egne regler.</li>
+</ul>
+
+<h2>Hvem der behandler data for os</h2>
+<ul>
+<li><strong>Deno Land Inc.</strong> (USA) driver vores server og database. I testfasen ligger databasen i USA. Vi flytter den til EU, før den første rigtige salon kommer med.</li>
+<li><strong>Google</strong> (Google Kalender) opbevarer salonens kalender, hvor bookingen skrives ind.</li>
+<li><strong>Den AI-assistent, du bruger</strong> (fx OpenAI eller Anthropic), behandler din samtale efter sin egen privatlivspolitik.</li>
+</ul>
+
+<h2>Dine rettigheder og valg</h2>
+<p>Du kan altid aflyse en booking med linket, du får, når du booker, eller ved at bede din AI-assistent aflyse den med bookingkoden – så slettes bookingen. Du har ret til indsigt, berigtigelse og sletning, til at gøre indsigelse mod vores brug af dine data og til dataportabilitet. Skriv til ${k}. Du kan også klage til Datatilsynet (datatilsynet.dk).</p>
+
+<h2>Ændringer</h2>
+<p>Hvis vi ændrer, hvordan vi behandler data, opdaterer vi denne side og datoen øverst.</p>`);
+}
 
 // ---------- Faneblade ----------
 const NAV_CSS = `.faner{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:0 0 16px;padding-bottom:8px}
@@ -1237,6 +1327,8 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
     }
     if (url.pathname === "/ai" || url.pathname === "/ai.html") return await aiSide(url);
     if (url.pathname === "/intern" || url.pathname.startsWith("/intern/")) return await intern(req, url);
+    if (url.pathname === "/privatliv") return privatlivSide("da");
+    if (url.pathname === "/privacy") return privatlivSide("en");
     if (url.pathname === "/robots.txt") return new Response("User-agent: *\nDisallow: /intern\nDisallow: /kalender\nDisallow: /booking/\n", { headers: { "content-type": "text/plain" } });
     if (url.pathname === "/kalender") return await kalenderside(url);
     if (url.pathname.startsWith("/kalender/") && req.method === "POST") return await kalenderPost(req, url);
