@@ -850,7 +850,8 @@ async function aiSide(url: URL): Promise<Response> {
   const proev = s ? `Jeg vil gerne booke ${s.behandlinger[0]?.navn.toLowerCase() ?? "en tid"} hos ${s.navn} i næste uge. Hvad er ledigt?` : "Jeg skal have lavet negle i næste uge. Kan du finde og booke en ledig tid?";
   const selv = `${ORIGIN}/ai${s ? "?salon=" + s.id : ""}`;
   await log({ type: "ai_side", klient: "Bookingside", salon: s?.id });
-  return html(`Book ${navn} via din AI`, `${faner("")}${testBanner(s ?? undefined)}<div class="ai"><h1>Book ${esc(navn)} via din AI</h1>
+  const titel = s ? `Book ${navn} via din AI` : "Book negle og vipper via din AI";
+  return html(titel, `${faner("")}${testBanner(s ?? undefined)}<div class="ai"><h1>${esc(titel)}</h1>
 <p class="muted">Tilføj ${esc(BRAND.replace(/ \(test\)$/, ""))} én gang. Bagefter kan du bare skrive "book negle i næste uge" til din assistent – så finder den ledige tider${s ? "" : " hos alle vores saloner"} og booker for dig.</p>
 <div class="kort"><h2 style="margin:0">Claude</h2><p class="muted">Virker i Claude-appen og på claude.ai. Den gratis plan kan have én egen forbindelse.</p>
 <a class="btn primaer" href="${esc(claudeLink)}">Tilføj til Claude</a>
