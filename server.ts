@@ -26,7 +26,7 @@
 //   GET|POST|PUT /admin/saloner[/<id>]   administration (kræver ADMIN_TOKEN)
 
 const TZ = "Europe/Copenhagen";
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const env = (k: string) => Deno.env.get(k) ?? "";
 const BRAND = env("BRAND") || "Bookbar (test)";
 
@@ -307,6 +307,18 @@ async function skrivEvent(s: Salon, titel: string, beskrivelse: string, start: n
   }
   const id = crypto.randomUUID();
   await kset(["ev", s.id, id], { id, titel, start, slut } as Ev);
+  return id;
+}
+async function skrivHeldag(s: Salon, titel: string, dato: string): Promise<string> {
+  if (brugerGoogle(s)) {
+    const res = await gcal(`/calendars/${encodeURIComponent(kalenderFor(s)!)}/events`, {
+      method: "POST", body: JSON.stringify({ summary: titel, start: { date: dato }, end: { date: plusDage(dato, 1) } }),
+    });
+    if (!res.ok) throw new Error(`Kunne ikke skrive i salonens kalender (${res.status}).`);
+    return (await res.json()).id;
+  }
+  const id = crypto.randomUUID();
+  await kset(["ev", s.id, id], { id, titel, start: lokalMs(dato, "00:00"), slut: lokalMs(plusDage(dato, 1), "00:00"), heldag: [dato, plusDage(dato, 1)] } as Ev);
   return id;
 }
 async function sletEvent(s: Salon, id: string): Promise<void> {
@@ -677,7 +689,7 @@ const testBanner = (s?: Salon) => (s ? s.test : true) ? `<p class="test"><strong
 
 async function forside(): Promise<Response> {
   const saloner = await alleSaloner();
-  return html(BRAND, `${saloner.some((s) => s.test) ? testBanner() : ""}<h1>${esc(BRAND)}</h1><p class="muted">Ledige tider og booking hos uafhængige saloner – også via din AI-assistent.</p>` +
+  return html(BRAND, `${faner("/")}${saloner.some((s) => s.test) ? testBanner() : ""}<h1>${esc(BRAND)}</h1><p class="muted">Ledige tider og booking hos uafhængige saloner – også via din AI-assistent.</p>` +
     saloner.map((s) => `<div class="kort"><h2><a href="/s/${s.id}">${esc(s.navn)}</a>${s.test ? " <small class='muted'>(test)</small>" : ""}</h2><p>${esc(s.omraade)} · ${kategorierAf(s).join(", ")} · ${prisSpand(s)}</p><p class="muted">${esc(s.beskrivelse)}</p></div>`).join(""));
 }
 async function salonside(s: Salon, behId: string | null, besked = ""): Promise<Response> {
@@ -699,6 +711,125 @@ async function salonside(s: Salon, behId: string | null, besked = ""): Promise<R
 <label for="navn">Dit navn</label><input id="navn" name="navn" required maxlength="60" autocomplete="name">
 <label for="tlf">Telefon (valgfrit)</label><input id="tlf" name="telefon" maxlength="20" autocomplete="tel" inputmode="tel">
 <button type="submit">Book tiden</button><p class="muted">Betaling sker hos salonen. Du får en bookingkode og et link til at aflyse.</p></form>`);
+}
+
+// ---------- Faneblade ----------
+const NAV_CSS = `.faner{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:0 0 16px;padding-bottom:8px}
+.faner a{padding:8px 14px;border-radius:999px;text-decoration:none;color:var(--fg);font-weight:600}.faner a.valgt{background:var(--accent);color:#fff}.faner a:not(.valgt):hover{background:var(--card)}`;
+const faner = (aktiv: string) => `<style>${NAV_CSS}</style><nav class="faner" aria-label="Sider">` +
+  [["/", "Saloner"], ["/kalender", "Kalender"], ["/dashboard", "Dashboard"], ["/status", "Status"]]
+    .map(([h, t]) => `<a href="${h}"${h === aktiv ? ' class="valgt" aria-current="page"' : ""}>${t}</a>`).join("") + "</nav>";
+
+// ---------- Kalender: se og ret salonernes kalender ----------
+// Testsaloner kan rettes af alle (kun opdigtede data). Rigtige saloner kræver ADMIN_TOKEN som kode.
+function maaRette(s: Salon, kode: string): boolean {
+  if (s.test) return true;
+  const t = env("ADMIN_TOKEN");
+  return !!t && kode === t;
+}
+const mandagI = (dato: string) => plusDage(dato, -ugedag(dato));
+const KAL_CSS = `html body{max-width:960px}.uge{display:grid;gap:10px}.dag{background:var(--card);border-radius:12px;padding:10px 14px}
+.dag h3{margin:0 0 4px;font-size:1rem}.ev{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)}.ev:first-of-type{border-top:0}
+.ev .t{font-variant-numeric:tabular-nums;white-space:nowrap;min-width:96px}.ev .x{flex:1}.ev form{margin:0}.ev button,.mini{width:auto;margin:0;padding:6px 10px;font-size:.85rem;border-radius:8px}
+.mrk{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:999px;border:1px solid var(--line);margin-left:6px;color:var(--muted)}
+.mrk.b{border-color:var(--accent);color:var(--accent)}.lukket{color:var(--muted);font-style:italic}.raekke{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.vaelg a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:999px;margin:0 4px 4px 0;text-decoration:none;color:var(--fg)}.vaelg a.valgt{background:var(--accent);border-color:var(--accent);color:#fff}
+details summary{cursor:pointer;font-weight:600}`;
+async function kalenderside(url: URL, besked = ""): Promise<Response> {
+  const saloner = await alleSaloner(true);
+  const s = saloner.find((x) => x.id === url.searchParams.get("salon")) ?? saloner[0];
+  const iDag = nuIKbh().dato;
+  const uge = mandagI(datoOk(url.searchParams.get("uge") ?? "") ? url.searchParams.get("uge")! : iDag);
+  const fra = lokalMs(uge, "00:00"), til = lokalMs(plusDage(uge, 7), "00:00");
+  let evs: Ev[] = [];
+  let fejl = "";
+  try { evs = await hentEvents(s, fra, til); } catch (e) { fejl = (e as Error).message; }
+  const bookinger = (await klist<Booking>(["booking"])).filter((b) => b.salon === s.id);
+  const efterEvent = new Map(bookinger.filter((b) => b.eventId).map((b) => [b.eventId!, b]));
+  const korteste = Math.min(...s.behandlinger.map((b) => b.minutter));
+  const ledigt = await dage(s, uge, 7).catch(() => new Map<string, Dag>());
+  const q = (u: string) => `/kalender?salon=${s.id}&uge=${u}`;
+  const skjult = `<input type="hidden" name="salon" value="${s.id}"><input type="hidden" name="uge" value="${uge}">${s.test ? "" : '<input type="password" name="kode" placeholder="Kode" required style="max-width:140px">'}`;
+  let dagHtml = "";
+  for (let i = 0; i < 7; i++) {
+    const d = plusDage(uge, i);
+    const aab = s.aabning[String(i)] ?? [];
+    const dagEvs = evs.filter((e) => e.heldag ? (e.heldag[0] <= d && d < e.heldag[1]) : (iKbh(e.start).dato === d)).sort((a, b) => a.start - b.start);
+    const lukket = dagEvs.some((e) => e.heldag && erLukket(e.titel));
+    const tider = ledigt.get(d) ? startTider(s, ledigt.get(d)!, korteste).length : 0;
+    const linjer = dagEvs.map((e) => {
+      const b = efterEvent.get(e.id);
+      const tid = e.heldag ? "Hele dagen" : `${iKbh(e.start).tid}–${iKbh(e.slut).tid}`;
+      const beh = b ? s.behandlinger.find((x) => x.id === b.behandling) : undefined;
+      const tekstDel = b ? `${esc(beh?.navn ?? b.behandling)} – ${esc(b.navn)}<span class="mrk b">${b.kilde === "ai" ? "booket via AI" : "booket på siden"}</span>`
+        : `${esc(e.titel || "(uden titel)")}<span class="mrk">${e.heldag ? (erLukket(e.titel) ? "lukket" : "heldag") : erFri(e.titel) || e.fri ? "ledig" : "blokering"}</span>`;
+      const knap = b ? `<form method="post" action="/kalender/aflys">${skjult}<input type="hidden" name="kode_b" value="${b.kode}"><button class="mini" onclick="return confirm('Aflys ${b.kode}?')">Aflys</button></form>`
+        : `<form method="post" action="/kalender/slet">${skjult}<input type="hidden" name="id" value="${esc(e.id)}"><button class="mini" onclick="return confirm('Slet aftalen?')">Slet</button></form>`;
+      return `<div class="ev"><span class="t">${tid}</span><span class="x">${tekstDel}</span>${knap}</div>`;
+    }).join("");
+    dagHtml += `<div class="dag"><h3>${danskDato(d)}${d === iDag ? " · i dag" : ""}</h3><p class="muted" style="margin:0 0 6px">${lukket ? '<span class="lukket">Lukket</span>' : aab.length ? "Åbent " + aab.map(([a, b]) => `${a}–${b}`).join(", ") + ` · ${tider} ledige starttider (${korteste} min)` : '<span class="lukket">Ingen åbningstid</span>'}</p>${linjer || '<p class="muted" style="margin:0">Ingen aftaler.</p>'}</div>`;
+  }
+  const aabForm = UGEDAGE.map((navn, i) => { const [a, b] = (s.aabning[String(i)] ?? [])[0] ?? ["", ""]; return `<div><label for="a${i}">${navn}</label><div style="display:flex;gap:4px"><input id="a${i}" name="fra${i}" type="time" value="${a}" step="900"><input name="til${i}" type="time" value="${b}" step="900" aria-label="${navn} til"></div></div>`; }).join("");
+  const krop = `${faner("/kalender")}${testBanner(s)}<h1>Kalender</h1>
+<p class="muted">Det samme, som AI-assistenterne ser. Ledige tider = åbningstid minus alle aftaler i kalenderen.${brugerGoogle(s) ? " Kalenderen ligger hos Google – ændringer her slår igennem dér og omvendt." : " Intern testkalender."}</p>
+<nav class="vaelg" aria-label="Salon">${saloner.map((x) => `<a href="/kalender?salon=${x.id}&uge=${uge}" class="${x.id === s.id ? "valgt" : ""}">${esc(x.navn)}${x.test ? "" : " 🔒"}</a>`).join("")}</nav>
+<nav class="vaelg" aria-label="Uge"><a href="${q(plusDage(uge, -7))}">← Forrige uge</a><a href="${q(mandagI(iDag))}" class="${uge === mandagI(iDag) ? "valgt" : ""}">Denne uge</a><a href="${q(plusDage(uge, 7))}">Næste uge →</a></nav>
+${besked}${fejl ? `<p class="test">${esc(fejl)}</p>` : ""}
+<div class="uge">${dagHtml}</div>
+<div class="kort"><h2 style="margin-top:0">Bloker en tid</h2><form method="post" action="/kalender/bloker">${skjult}
+<div class="raekke"><div><label for="bd">Dato</label><input id="bd" name="dato" type="date" value="${uge < iDag && plusDage(uge, 7) > iDag ? iDag : uge}" required></div>
+<div><label for="bf">Fra</label><input id="bf" name="fra" type="time" step="900"></div><div><label for="bt">Til</label><input id="bt" name="til" type="time" step="900"></div>
+<div><label for="bn">Tekst</label><input id="bn" name="titel" value="Optaget" maxlength="60"></div></div>
+<label style="font-weight:400"><input type="checkbox" name="heldag" value="1" style="width:auto"> Luk hele dagen (ignorerer fra/til)</label>
+<button type="submit">Gem i kalenderen</button></form></div>
+<details class="kort"><summary>Ret åbningstider</summary><form method="post" action="/kalender/aabning">${skjult}<div class="raekke">${aabForm}</div>
+<p class="muted">Tomt felt = lukket den dag. Én åbningsperiode pr. dag.</p><button type="submit">Gem åbningstider</button></form></details>`;
+  return html(`${BRAND} – kalender`, krop, `<style>${KAL_CSS}</style><meta name="robots" content="noindex">`);
+}
+async function kalenderPost(req: Request, url: URL): Promise<Response> {
+  const f = await req.formData();
+  const s = await kget<Salon>(["salon", String(f.get("salon") ?? "")]);
+  const uge = String(f.get("uge") ?? "");
+  const tilbage = (besked: string) => { const u = new URL(url); u.pathname = "/kalender"; u.search = ""; if (s) u.searchParams.set("salon", s.id); if (datoOk(uge)) u.searchParams.set("uge", uge); return kalenderside(u, besked); };
+  if (!s) return tilbage(`<p class="test">Ukendt salon.</p>`);
+  if (!maaRette(s, String(f.get("kode") ?? ""))) return tilbage(`<p class="test">Forkert kode – rigtige saloner kan kun rettes med administrationskoden.</p>`);
+  const ok = (t: string) => tilbage(`<p class="kort" role="status">✓ ${esc(t)}</p>`);
+  try {
+    if (url.pathname === "/kalender/bloker") {
+      const dato = String(f.get("dato") ?? ""), titel = String(f.get("titel") ?? "").trim().slice(0, 60) || "Optaget";
+      if (!datoOk(dato)) return tilbage(`<p class="test">Vælg en dato.</p>`);
+      if (f.get("heldag")) { await skrivHeldag(s, "Lukket", dato); return ok(`${danskDato(dato)} er lukket.`); }
+      const a = normTid(f.get("fra")), b = normTid(f.get("til"));
+      if (!tidOk(a) || !tidOk(b) || a >= b) return tilbage(`<p class="test">Angiv fra og til, fx 12:00 og 13:00.</p>`);
+      await skrivEvent(s, titel, `Lagt ind via ${BRAND}s kalenderside.`, lokalMs(dato, a), lokalMs(dato, b));
+      return ok(`${titel} ${danskDato(dato)} kl. ${a}–${b} er lagt i kalenderen.`);
+    }
+    if (url.pathname === "/kalender/slet") {
+      const id = String(f.get("id") ?? "");
+      const b = (await klist<Booking>(["booking"])).find((x) => x.eventId === id);
+      if (b) { await aflys(b, "Kalenderside", "salon"); return ok(`Bookingen ${b.kode} er aflyst.`); }
+      await sletEvent(s, id);
+      return ok("Aftalen er slettet.");
+    }
+    if (url.pathname === "/kalender/aflys") {
+      const b = await findKode(String(f.get("kode_b") ?? ""));
+      if (!b || b.salon !== s.id) return tilbage(`<p class="test">Bookingen findes ikke længere.</p>`);
+      await aflys(b, "Kalenderside", "salon");
+      return ok(`Bookingen ${b.kode} er aflyst, og tiden er ledig igen.`);
+    }
+    if (url.pathname === "/kalender/aabning") {
+      const ny: Aabning = {};
+      for (let i = 0; i < 7; i++) {
+        const a = normTid(f.get("fra" + i)), b = normTid(f.get("til" + i));
+        if (!a && !b) continue;
+        if (!tidOk(a) || !tidOk(b) || a >= b) return tilbage(`<p class="test">${UGEDAGE[i]}: angiv både fra og til, og fra skal være før til.</p>`);
+        ny[String(i)] = [[a, b]];
+      }
+      await gemSalon({ ...s, aabning: ny });
+      return ok("Åbningstiderne er gemt.");
+    }
+  } catch (e) { return tilbage(`<p class="test">Fejl: ${esc((e as Error).message)}</p>`); }
+  return tilbage("");
 }
 
 // ---------- Dashboard (kun anonyme tal fra hændelsesloggen) ----------
@@ -796,7 +927,7 @@ async function dashboard(url: URL): Promise<Response> {
     `<div class="kort tabwrap"><h2 style="margin-top:0">${titel}</h2><table><thead><tr><th></th>${medSamtaler ? '<th class="n">Samtaler</th>' : ""}<th class="n">Opslag</th><th class="n">Bookinger</th><th class="n">Aflyst</th><th class="n">Afvist</th><th class="n">Netto kr</th></tr></thead><tbody>` +
     raekker.map((r) => `<tr><td>${esc(r.navn)}</td>${medSamtaler ? `<td class="n">${r.samtaler}</td>` : ""}<td class="n">${r.opslag}</td><td class="n">${r.bookinger}</td><td class="n">${r.aflysninger}</td><td class="n">${r.afvist}</td><td class="n">${tal(r.kr)}</td></tr>`).join("") + "</tbody></table></div>";
   const vaelg = ["7", "30", "alle"].map((p) => `<a href="?periode=${p}" class="${p === periode ? "valgt" : ""}">${p === "alle" ? "Alt" : p + " dage"}</a>`).join("");
-  const krop = `${testBanner()}<p><a href="/">← ${esc(BRAND)}</a></p><h1>Dashboard</h1>
+  const krop = `${faner("/dashboard")}${testBanner()}<h1>Dashboard</h1>
 <p class="muted">Anonyme tal fra forbindelsen: hvad AI-assistenterne slår op, booker og aflyser. Ingen navne, telefonnumre eller IP-adresser gemmes.</p>
 <nav class="periode" aria-label="Periode">${vaelg}</nav>
 <div class="tiles">${tile(tal(o.samtaler), "Samtaler med forbindelsen")}${tile(tal(o.opslag), "Opslag (saloner, priser, tider)")}${tile(tal(o.bookinger), `Bookinger (${o.aiBookinger} via AI)`)}${tile(tal(o.aflysninger), "Aflysninger" + (o.aflysningsandel !== null ? ` (${o.aflysningsandel} %)` : ""))}
@@ -867,8 +998,10 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
         if (brugerGoogle(s)) { try { await hentEvents(s, Date.now(), Date.now() + 86400000); st += " – forbundet og læsbar"; } catch (e) { st += " – FEJL: " + (e as Error).message; } }
         linjer.push(`${s.navn}${s.test ? " (test)" : ""}${s.aktiv ? "" : " (inaktiv)"}: ${st}`);
       }
-      return new Response(`${BRAND} ${VERSION}\n${saKey ? "Robotkonto: " + saKey.client_email : "Ingen robotkonto – intern testkalender"}\nAdmin: ${env("ADMIN_TOKEN") ? "slået til" : "lukket (ADMIN_TOKEN mangler)"}\nDatabase: ${kv ? "Deno KV" : "hukommelse"}\n${linjer.join("\n")}\n`,
-        { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      const txt = `${BRAND} ${VERSION}\n${saKey ? "Robotkonto: " + saKey.client_email : "Ingen robotkonto – intern testkalender"}\nAdmin: ${env("ADMIN_TOKEN") ? "slået til" : "lukket (ADMIN_TOKEN mangler)"}\nDatabase: ${kv ? "Deno KV" : "hukommelse"}\n${linjer.join("\n")}\n`;
+      if (url.searchParams.has("tekst") || !(req.headers.get("accept") ?? "").includes("text/html"))
+        return new Response(txt, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      return html(`${BRAND} – status`, `${faner("/status")}<h1>Status</h1><div class="kort"><pre style="white-space:pre-wrap;margin:0">${esc(txt)}</pre></div><p class="muted">MCP-forbindelse: ${esc(ORIGIN)}/mcp</p>`);
     }
     if (url.pathname === "/llms.txt") {
       const nu = nuIKbh();
@@ -882,6 +1015,8 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       }
       return new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
+    if (url.pathname === "/kalender") return await kalenderside(url);
+    if (url.pathname.startsWith("/kalender/") && req.method === "POST") return await kalenderPost(req, url);
     if (url.pathname === "/dashboard") return await dashboard(url);
     if (url.pathname === "/dashboard.json") return await dashboardJson(url);
     if (url.pathname === "/") return await forside();
