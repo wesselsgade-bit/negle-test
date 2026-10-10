@@ -2,7 +2,7 @@
 
 > TESTSIDE. Opdigtet negleartist i Brøndby (2605). Tiderne er testdata, og der kan ikke bookes.
 
-Sidst opdateret: 09.10.2026 kl. 18:29
+Sidst opdateret: 10.10.2026 kl. 06:28
 
 ## Behandlinger
 - Gellak på egne negle: 350 kr, 60 minutter
@@ -11,8 +11,7 @@ Sidst opdateret: 09.10.2026 kl. 18:29
 - Vippeløft med farve: 400 kr, 60 minutter
 
 ## Ledige tider
-- fredag 9. oktober 2026 (i dag): ingen ledige tider
-- lørdag 10. oktober 2026: ledig kl. 10:30, 13:00, 14:30
+- lørdag 10. oktober 2026 (i dag): ledig kl. 10:30, 13:00, 14:30
 - søndag 11. oktober 2026: ingen ledige tider
 - mandag 12. oktober 2026: ledig kl. 17:30, 18:00, 19:30
 - tirsdag 13. oktober 2026: ledig kl. 17:00, 18:30, 19:30
@@ -25,3 +24,4 @@ Sidst opdateret: 09.10.2026 kl. 18:29
 - tirsdag 20. oktober 2026: ledig kl. 17:00, 20:00, 20:30
 - onsdag 21. oktober 2026: ledig kl. 17:00, 17:30, 19:00
 - torsdag 22. oktober 2026: ledig kl. 16:00, 16:30, 17:00
+- fredag 23. oktober 2026: ledig kl. 15:30, 16:30, 19:00
