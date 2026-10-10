@@ -26,7 +26,7 @@
 //   GET|POST|PUT /admin/saloner[/<id>]   administration (kræver ADMIN_TOKEN)
 
 const TZ = "Europe/Copenhagen";
-const VERSION = "0.4.1";
+const VERSION = "0.5.0";
 const env = (k: string) => Deno.env.get(k) ?? "";
 const BRAND = env("BRAND") || "Bookbar (test)";
 
@@ -37,14 +37,18 @@ const SLAGS = ["nyt", "opfyldning", "fjernelse", "enkelt", "andet"] as const;
 type Slags = typeof SLAGS[number];
 type Behandling = {
   id: string; navn: string; kategori: Kategori; slags?: Slags; materiale?: string;
-  pris: number; minutter: number; beskrivelse?: string;
+  pris: number; minutter: number; beskrivelse?: string; stikord?: string[]; billede?: number;
 };
+// Et billede er enten en rigtig URL (salonens eget foto) eller en indbygget illustration (motiv).
+type Billede = { url?: string; motiv?: Motiv; farver?: string[]; tekst: string };
+type Motiv = "glat" | "french" | "chrome" | "glimmer" | "kunst" | "vipper" | "naturlig";
 type Aabning = Record<string, [string, string][]>; // "0" = mandag … "6" = søndag -> [["10:00","18:00"]]
 type Salon = {
   id: string; navn: string; omraade: string; adresse: string; beskrivelse: string;
   kodePrefix: string; email?: string; kalenderId?: string; kalenderEnv?: string;
   aabning: Aabning; pauseMin: number; intervalMin: number; varselMin: number;
   behandlinger: Behandling[]; test: boolean; aktiv: boolean; oprettet: string;
+  omArtisten?: string; stikord?: string[]; praktisk?: string[]; billeder?: Billede[]; dataVersion?: number;
 };
 
 const TESTSALONER: Salon[] = [
@@ -56,12 +60,27 @@ const TESTSALONER: Salon[] = [
     aabning: { "0": [["17:00", "21:00"]], "1": [["17:00", "21:00"]], "2": [["17:00", "21:00"]], "3": [["16:00", "21:00"]], "4": [["15:00", "20:00"]], "5": [["10:00", "15:00"]] },
     pauseMin: 0, intervalMin: 30, varselMin: 0,
     behandlinger: [
-      { id: "gellak", navn: "Gellak på egne negle", kategori: "negle", slags: "enkelt", materiale: "gellak", pris: 350, minutter: 60 },
-      { id: "nyt-saet", navn: "Nyt sæt gelénegle – French", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 450, minutter: 90 },
-      { id: "opfyldning", navn: "Opfyldning af gelénegle", kategori: "negle", slags: "opfyldning", materiale: "gelé", pris: 380, minutter: 75 },
-      { id: "vippeloeft", navn: "Vippeløft med farve", kategori: "vipper", slags: "enkelt", pris: 400, minutter: 60 },
-      { id: "gellak-vippeloeft", navn: "Gellak + vippeløft i ét besøg", kategori: "negle", slags: "andet", pris: 700, minutter: 120, beskrivelse: "Kombination: gellak og vippeløft samme besøg." },
+      { id: "gellak", navn: "Gellak på egne negle", kategori: "negle", slags: "enkelt", materiale: "gellak", pris: 350, minutter: 60,
+        beskrivelse: "Holder 2–3 uger. Vælg mellem ca. 120 farver – også stærke røde som chili og bordeaux. Inkl. neglebåndspleje og fil.", stikord: ["farve", "chili-rød", "rød", "nude", "holdbar"], billede: 0 },
+      { id: "nyt-saet", navn: "Nyt sæt gelénegle – French", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 450, minutter: 90,
+        beskrivelse: "Forlængelse med gelé på skabelon. Klassisk hvid French eller farvet French. Længde og form efter ønske (mandel, kiste, firkantet).", stikord: ["french", "forlængelse", "lange negle", "mandel", "bryllup"], billede: 1 },
+      { id: "opfyldning", navn: "Opfyldning af gelénegle", kategori: "negle", slags: "opfyldning", materiale: "gelé", pris: 380, minutter: 75,
+        beskrivelse: "Efter 3–4 uger. Udvoksning fyldes op, og du kan skifte farve. Nail art kan tilkøbes på stedet.", stikord: ["opfyldning", "skift farve", "nail art"] },
+      { id: "vippeloeft", navn: "Vippeløft med farve", kategori: "vipper", slags: "enkelt", pris: 400, minutter: 60,
+        beskrivelse: "Løfter og farver dine egne vipper. Holder 6–8 uger. Ingen extensions – naturligt look.", stikord: ["vipper", "naturligt", "løft", "farvning"], billede: 3 },
+      { id: "gellak-vippeloeft", navn: "Gellak + vippeløft i ét besøg", kategori: "negle", slags: "andet", pris: 700, minutter: 120,
+        beskrivelse: "Kombination: gellak og vippeløft samme besøg. Spar 50 kr og en ekstra tur.", stikord: ["kombi", "negle og vipper", "samme dag"] },
     ],
+    omArtisten: "Mia har lavet negle og vipper i 6 år og arbejder fra sin lyse hjemmeklinik i Brøndby Strand. Hun elsker stærke farver og små detaljer – chili-røde negle, glimmer-French og diskret nail art – men laver også rolige, naturlige looks.",
+    stikord: ["chili-røde negle", "nail art", "glimmer", "French", "bryllup", "vippeløft", "aftentider", "hjemmeklinik"],
+    praktisk: ["Gratis parkering ved døren", "MobilePay eller kontant", "Taler dansk og engelsk", "Kat i hjemmet – sig til ved allergi", "Afbud senest 24 timer før"],
+    billeder: [
+      { motiv: "glat", farver: ["#c1121f"], tekst: "Chili-rød gellak" },
+      { motiv: "french", farver: ["#f6e7e1"], tekst: "Klassisk French på gelé" },
+      { motiv: "glimmer", farver: ["#e8c1c5", "#d4af37"], tekst: "Rosa med guldglimmer" },
+      { motiv: "vipper", tekst: "Vippeløft med farve" },
+    ],
+    dataVersion: 2,
     test: true, aktiv: true, oprettet: "2026-10-09",
   },
   {
@@ -72,11 +91,24 @@ const TESTSALONER: Salon[] = [
     aabning: { "0": [["09:00", "16:00"]], "1": [["09:00", "16:00"]], "2": [["09:00", "13:00"]], "3": [["10:00", "18:00"]], "4": [["09:00", "15:00"]] },
     pauseMin: 0, intervalMin: 30, varselMin: 0,
     behandlinger: [
-      { id: "gellak", navn: "Gellak på egne negle", kategori: "negle", slags: "enkelt", materiale: "gellak", pris: 299, minutter: 45 },
-      { id: "nyt-saet", navn: "Nyt sæt gelénegle", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 420, minutter: 90 },
-      { id: "opfyldning", navn: "Opfyldning af gelénegle", kategori: "negle", slags: "opfyldning", materiale: "gelé", pris: 349, minutter: 60 },
-      { id: "manicure", navn: "Klassisk manicure uden lak", kategori: "negle", slags: "enkelt", pris: 249, minutter: 40 },
+      { id: "gellak", navn: "Gellak på egne negle", kategori: "negle", slags: "enkelt", materiale: "gellak", pris: 299, minutter: 45,
+        beskrivelse: "Hurtig og holdbar. 40 udvalgte farver, mest nude, rosa og klassisk rød. Chrome-pulver kan tilkøbes for 50 kr.", stikord: ["hurtig", "billig", "nude", "rød", "chrome"], billede: 0 },
+      { id: "nyt-saet", navn: "Nyt sæt gelénegle", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 420, minutter: 90,
+        beskrivelse: "Naturlig forlængelse i kort til mellem længde. Ensfarvet eller chrome. Ingen lange kunstnegle.", stikord: ["forlængelse", "kort", "chrome"], billede: 1 },
+      { id: "opfyldning", navn: "Opfyldning af gelénegle", kategori: "negle", slags: "opfyldning", materiale: "gelé", pris: 349, minutter: 60,
+        beskrivelse: "Efter 3–4 uger. Inkl. farveskift.", stikord: ["opfyldning"] },
+      { id: "manicure", navn: "Klassisk manicure uden lak", kategori: "negle", slags: "enkelt", pris: 249, minutter: 40,
+        beskrivelse: "Fil, neglebånd, peeling og håndcreme. Godt til mænd og til dig, der vil have pæne negle uden farve.", stikord: ["naturligt", "uden lak", "mænd", "pleje"], billede: 2 },
     ],
+    omArtisten: "Neglebaren Kastanje er en lille salon på Hvidovrevej med to stole. Sara og Amira laver hurtige, holdbare negle i dagtimerne – til dig, der vil ind og ud i frokostpausen. Rolige farver, chrome og pæne, naturlige negle. Ingen vipper.",
+    stikord: ["hurtigt", "billigt", "frokostpause", "chrome", "nude", "naturlige negle", "butik"],
+    praktisk: ["Salon i stueplan – kørestolsvenlig", "Bus 1A og 200S stopper ved døren", "MobilePay og kort", "Taler dansk, arabisk og engelsk", "Vegan og HEMA-fri gellak"],
+    billeder: [
+      { motiv: "glat", farver: ["#d8b4a0"], tekst: "Nude gellak" },
+      { motiv: "chrome", farver: ["#c9ced6", "#ffffff"], tekst: "Sølv-chrome på korte negle" },
+      { motiv: "naturlig", farver: ["#f3d5c8"], tekst: "Klassisk manicure uden lak" },
+    ],
+    dataVersion: 2,
     test: true, aktiv: true, oprettet: "2026-10-09",
   },
 ];
@@ -167,7 +199,11 @@ async function hentSalon(id: unknown): Promise<Salon | null> {
   return s && s.aktiv ? s : null;
 }
 const gemSalon = (s: Salon) => kset(["salon", s.id], s);
-for (const t of TESTSALONER) if (!(await kget<Salon>(["salon", t.id]))) await gemSalon(t);
+for (const t of TESTSALONER) {
+  const gl = await kget<Salon>(["salon", t.id]);
+  if (!gl) await gemSalon(t);
+  else if (gl.test && (gl.dataVersion ?? 0) < (t.dataVersion ?? 0)) await gemSalon({ ...t, aabning: gl.aabning, kalenderId: gl.kalenderId, email: gl.email }); // nye tekster, behold rettede åbningstider
+}
 
 // Bookinger
 type Booking = {
@@ -418,14 +454,65 @@ async function aflys(b: Booking, klient: string, kilde: string): Promise<void> {
   await log({ type: "aflysning", klient, kilde, salon: b.salon, behandling: b.behandling, kategori: kat, pris, dageFrem: dageFra(b.dato) });
 }
 
+// ---------- Fritekstsøgning ----------
+const STOPORD = new Set(["og", "i", "til", "med", "en", "et", "jeg", "vil", "gerne", "have", "lavet", "der", "som", "for", "på", "af", "min", "mine",
+  "noget", "nogle", "kan", "har", "skal", "lave", "nogen", "hvor", "hvem", "the", "a", "the", "gør", "laver", "sted", "steder", "tid"]);
+const normTekst = (t: string) => t.toLowerCase().replace(/[^a-z0-9æøåéü]+/g, " ").trim();
+const soegeord = (q: string) => [...new Set(normTekst(q).split(" ").filter((w) => w.length > 1 && !STOPORD.has(w)))].slice(0, 12);
+function rammer(tekst: string, w: string): boolean {
+  const t = " " + normTekst(tekst) + " ";
+  if (t.includes(w)) return true;
+  const stamme = w.length > 5 ? w.slice(0, w.length - 2) : w; // negle/neglene, røde/rød
+  return stamme.length >= 4 && t.includes(" " + stamme);
+}
+const behTekst = (b: Behandling) => [b.navn, b.kategori, b.materiale ?? "", b.beskrivelse ?? "", ...(b.stikord ?? [])].join(" ");
+const salonTekst = (s: Salon) => [s.navn, s.omraade, s.beskrivelse, s.omArtisten ?? "", ...(s.stikord ?? []), ...(s.praktisk ?? []),
+  ...(s.billeder ?? []).map((b) => b.tekst), ...s.behandlinger.map(behTekst)].join(" ");
+function soegSalon(s: Salon, ord: string[]): { score: number; ramt: string[] } {
+  const tekst = salonTekst(s);
+  const ramt = ord.filter((w) => rammer(tekst, w));
+  return { score: ramt.length, ramt };
+}
+
+// ---------- Illustrationer (egne, ingen ophavsret) ----------
+function illustration(b: Billede): string {
+  const f = b.farver ?? ["#c1121f"];
+  const W = 320, H = 240;
+  const bg = `<rect width="${W}" height="${H}" rx="18" fill="#f7efe9"/>`;
+  if (b.motiv === "vipper") {
+    const vipper = Array.from({ length: 13 }, (_, i) => { const a = Math.PI * (0.12 + 0.76 * i / 12); const x1 = 160 - 95 * Math.cos(a), y1 = 132 - 40 * Math.sin(a); const x2 = 160 - 118 * Math.cos(a), y2 = 132 - 78 * Math.sin(a); return `<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} Q${((x1 + x2) / 2 - 4).toFixed(1)} ${((y1 + y2) / 2 - 6).toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}" stroke="#2b1d1a" stroke-width="3.2" fill="none" stroke-linecap="round"/>`; }).join("");
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(b.tekst)}">${bg}<path d="M60 132 Q160 52 260 132 Q160 196 60 132Z" fill="#fff" stroke="#c9a99a" stroke-width="2"/><circle cx="160" cy="132" r="34" fill="#6b4a3a"/><circle cx="160" cy="132" r="15" fill="#1f1512"/><circle cx="150" cy="122" r="6" fill="#fff" opacity=".8"/>${vipper}<path d="M60 132 Q160 52 260 132" stroke="#2b1d1a" stroke-width="4" fill="none"/></svg>`;
+  }
+  // Hånd set ovenfra: fire fingre og en tommel med negle i motivets farve.
+  const fingre = [[92, 70, 150], [132, 46, 168], [172, 50, 166], [212, 78, 148]];
+  let negle = "", huden = "";
+  const id = "g" + Math.abs([...b.tekst].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7));
+  const defs = b.motiv === "chrome" ? `<linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".45" stop-color="${f[0]}"/><stop offset=".6" stop-color="#8a929e"/><stop offset="1" stop-color="#fff"/></linearGradient>` : "";
+  for (const [x, top, h] of fingre) {
+    huden += `<rect x="${x - 17}" y="${top}" width="34" height="${h}" rx="17" fill="#e9c2a6"/>`;
+    const ny = top + 6, nh = 40;
+    const fyld = b.motiv === "chrome" ? `url(#${id})` : b.motiv === "naturlig" ? f[0] : b.motiv === "french" ? "#f3d9d1" : f[0];
+    negle += `<rect x="${x - 12}" y="${ny}" width="24" height="${nh}" rx="12" fill="${fyld}" ${b.motiv === "naturlig" ? 'stroke="#d9a892" stroke-width="1.5"' : ""}/>`;
+    if (b.motiv === "french") negle += `<path d="M${x - 12} ${ny + 12} A12 12 0 0 1 ${x + 12} ${ny + 12} L${x + 12} ${ny + 16} Q${x} ${ny + 6} ${x - 12} ${ny + 16}Z" fill="#fffdfb"/><rect x="${x - 12}" y="${ny}" width="24" height="14" rx="12" fill="#fffdfb"/>`;
+    if (b.motiv === "glimmer") for (let k = 0; k < 7; k++) negle += `<circle cx="${(x - 8 + ((k * 37) % 16)).toFixed(0)}" cy="${(ny + 6 + ((k * 23) % 30)).toFixed(0)}" r="${1 + (k % 3) * 0.8}" fill="${f[1] ?? "#d4af37"}"/>`;
+    if (b.motiv === "kunst") negle += `<circle cx="${x}" cy="${ny + 20}" r="5" fill="${f[1] ?? "#fff"}"/>`;
+    if (b.motiv !== "naturlig") negle += `<rect x="${x - 7}" y="${ny + 5}" width="4" height="16" rx="2" fill="#fff" opacity=".45"/>`;
+  }
+  const tommel = `<rect x="228" y="150" width="34" height="80" rx="17" fill="#e9c2a6" transform="rotate(-38 245 190)"/>`;
+  const haand = `<rect x="70" y="150" width="166" height="100" rx="40" fill="#e9c2a6"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(b.tekst)}"><defs>${defs}</defs>${bg}${haand}${tommel}${huden}${negle}</svg>`;
+}
+const billedUrl = (s: Salon, i: number) => s.billeder?.[i]?.url ?? `${ORIGIN}/billede/${s.id}/${i}.svg`;
+
 // ---------- Værktøjer (rene beskrivelser – ingen instrukser til assistenten) ----------
 async function vaerktoejer() {
   const ids = (await alleSaloner()).map((s) => s.id);
   return [
     {
       name: "find_saloner", title: "Find saloner",
-      description: `Viser de saloner, der kan bookes gennem ${BRAND}: område, kategorier (negle, vipper, bryn m.fl.), beskrivelse, prisniveau og åbningstider. Kan filtreres på kategori og område.`,
+      description: `Viser de saloner, der kan bookes gennem ${BRAND}: område, kategorier, beskrivelse, om artisten, stikord for stil og specialer, praktiske forhold, prisniveau, åbningstider og billeder. Kan filtreres på kategori, område og fritekst (fx en stil, farve eller et ønske).`,
       inputSchema: { type: "object", properties: {
+        soeg: { type: "string", description: "Fritekst, fx \"chili-røde negle\", \"chrome\", \"naturligt look\", \"parkering\" eller \"vegansk\"." },
         kategori: { type: "string", enum: [...KATEGORIER], description: "Vis kun saloner med behandlinger i denne kategori." },
         omraade: { type: "string", description: "Bynavn eller postnummer, fx Brøndby eller 2650." },
       }, additionalProperties: false },
@@ -433,10 +520,11 @@ async function vaerktoejer() {
     },
     {
       name: "vis_behandlinger", title: "Vis behandlinger og priser",
-      description: "Viser behandlinger med kategori, pris, varighed og salonens egen beskrivelse. Uden salon vises alle saloner.",
+      description: "Viser behandlinger med kategori, pris, varighed, salonens egen beskrivelse, stikord og billede. Uden salon vises alle saloner. Kan filtreres med fritekst.",
       inputSchema: { type: "object", properties: {
         salon: { type: "string", enum: ids, description: "Salonens id fra find_saloner." },
         kategori: { type: "string", enum: [...KATEGORIER] },
+        soeg: { type: "string", description: "Fritekst, der matches mod behandlingernes navn, beskrivelse og stikord." },
       }, additionalProperties: false },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -477,7 +565,7 @@ const kategorierAf = (s: Salon) => [...new Set(s.behandlinger.map((b) => b.kateg
 const prisSpand = (s: Salon) => { const p = s.behandlinger.map((b) => b.pris); return `${Math.min(...p)}–${Math.max(...p)} kr`; };
 const aabningTekst = (s: Salon) => Object.entries(s.aabning).filter(([, v]) => v.length)
   .map(([d, v]) => `${UGEDAGE[Number(d)].slice(0, 3)} ${v.map(([a, b]) => `${a}–${b}`).join(", ")}`).join("; ") || "ingen faste åbningstider";
-const behLinje = (b: Behandling) => `- ${b.navn} (id: ${b.id}) · ${b.kategori}${b.slags && b.slags !== "andet" ? ", " + b.slags : ""}${b.materiale ? ", " + b.materiale : ""} · ${b.pris} kr · ${b.minutter} min${b.beskrivelse ? ` · ${b.beskrivelse}` : ""}`;
+const behLinje = (b: Behandling, s?: Salon) => `- ${b.navn} (id: ${b.id}) · ${b.kategori}${b.slags && b.slags !== "andet" ? ", " + b.slags : ""}${b.materiale ? ", " + b.materiale : ""} · ${b.pris} kr · ${b.minutter} min${b.beskrivelse ? ` · ${b.beskrivelse}` : ""}${b.stikord?.length ? ` · Stikord: ${b.stikord.join(", ")}` : ""}${s && b.billede !== undefined && s.billeder?.[b.billede] ? ` · Billede: ${billedUrl(s, b.billede)}` : ""}`;
 
 async function kald(navn: string, a: Record<string, unknown>, ctx: Ctx = { klient: "Ukendt" }) {
   const k = ctx.klient;
@@ -486,19 +574,29 @@ async function kald(navn: string, a: Record<string, unknown>, ctx: Ctx = { klien
   if (navn === "find_saloner") {
     const kat = a.kategori ? String(a.kategori) : null;
     const omr = a.omraade ? String(a.omraade).toLowerCase() : null;
-    const liste = saloner.filter((s) => (!kat || s.behandlinger.some((b) => b.kategori === kat)) && (!omr || s.omraade.toLowerCase().includes(omr)));
-    await log({ type: "find_saloner", klient: k, kategori: kat ?? undefined, omraade: omr ? String(a.omraade).slice(0, 40) : undefined, antal: liste.length });
-    if (!liste.length) return tekst(`Ingen saloner fundet${kat ? ` med ${kat}` : ""}${omr ? ` i ${a.omraade}` : ""}.`);
-    return tekst(liste.map((s) => `- ${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}. Kategorier: ${kategorierAf(s).join(", ")}. ${s.beskrivelse} Priser: ${prisSpand(s)}. Åbent: ${aabningTekst(s)}.`).join("\n"));
+    const q = a.soeg ? String(a.soeg).slice(0, 120) : "";
+    const ord = soegeord(q);
+    let liste = saloner.filter((s) => (!kat || s.behandlinger.some((b) => b.kategori === kat)) && (!omr || s.omraade.toLowerCase().includes(omr)));
+    const traef = new Map(liste.map((s) => [s.id, soegSalon(s, ord)]));
+    if (ord.length) liste = liste.filter((s) => traef.get(s.id)!.score > 0).sort((x, y) => traef.get(y.id)!.score - traef.get(x.id)!.score);
+    await log({ type: "find_saloner", klient: k, kategori: kat ?? undefined, omraade: omr ? String(a.omraade).slice(0, 40) : undefined, antal: liste.length, grund: ord.length ? "fritekst: " + ord.join(" ").slice(0, 40) : undefined });
+    if (!liste.length) return tekst(`Ingen saloner fundet${kat ? ` med ${kat}` : ""}${omr ? ` i ${a.omraade}` : ""}${q ? ` der matcher "${q}"` : ""}.`);
+    return tekst(liste.map((s) => {
+      const t = traef.get(s.id)!;
+      return `- ${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}.${ord.length ? ` Matcher: ${t.ramt.join(", ")}.` : ""} Kategorier: ${kategorierAf(s).join(", ")}. ${s.beskrivelse}` +
+        `${s.omArtisten ? `\n  Om artisten: ${s.omArtisten}` : ""}${s.stikord?.length ? `\n  Stil og specialer: ${s.stikord.join(", ")}.` : ""}${s.praktisk?.length ? `\n  Praktisk: ${s.praktisk.join("; ")}.` : ""}` +
+        `\n  Priser: ${prisSpand(s)}. Åbent: ${aabningTekst(s)}.${s.billeder?.length ? `\n  Billeder: ${s.billeder.map((b, i) => `${b.tekst} (${billedUrl(s, i)})`).join("; ")}.` : ""}\n  Salonens side: ${ORIGIN}/s/${s.id}`;
+    }).join("\n"));
   }
   if (navn === "vis_behandlinger") {
     const valgt = a.salon ? saloner.find((s) => s.id === a.salon) : null;
     if (a.salon && !valgt) return tekst(`Ukendt salon. Gyldige: ${ids}.`, true);
     const kat = a.kategori ? String(a.kategori) : null;
-    await log({ type: "vis_behandlinger", klient: k, salon: valgt?.id ?? "alle", kategori: kat ?? undefined });
+    const ord = soegeord(a.soeg ? String(a.soeg).slice(0, 120) : "");
+    await log({ type: "vis_behandlinger", klient: k, salon: valgt?.id ?? "alle", kategori: kat ?? undefined, grund: ord.length ? "fritekst: " + ord.join(" ").slice(0, 40) : undefined });
     return tekst((valgt ? [valgt] : saloner).map((s) => {
-      const bh = s.behandlinger.filter((b) => !kat || b.kategori === kat);
-      return `${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}\n${bh.length ? bh.map(behLinje).join("\n") : "- ingen behandlinger i kategorien"}`;
+      const bh = s.behandlinger.filter((b) => (!kat || b.kategori === kat) && (!ord.length || ord.some((w) => rammer(behTekst(b), w))));
+      return `${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}\n${bh.length ? bh.map((b) => behLinje(b, s)).join("\n") : `- ingen behandlinger${kat ? " i kategorien" : ""}${ord.length ? " der matcher søgningen" : ""}`}`;
     }).join("\n\n") + "\nBetaling sker hos salonen.");
   }
   if (navn === "vis_ledige_tider") {
@@ -622,7 +720,9 @@ function validerSalon(inp: Record<string, unknown>, gammel?: Salon): { ok: true;
     const sl = r.slags ? String(r.slags) as Slags : undefined;
     behandlinger.push({ id, navn: bn.slice(0, 80), kategori: kat, slags: sl && SLAGS.includes(sl) ? sl : undefined,
       materiale: r.materiale ? String(r.materiale).slice(0, 40) : undefined, pris: Math.round(pris), minutter: Math.round(min),
-      beskrivelse: r.beskrivelse ? String(r.beskrivelse).slice(0, 300) : undefined });
+      beskrivelse: r.beskrivelse ? String(r.beskrivelse).slice(0, 500) : undefined,
+      stikord: Array.isArray(r.stikord) ? r.stikord.map((x) => String(x).slice(0, 40)).slice(0, 12) : undefined,
+      billede: typeof r.billede === "number" ? r.billede : undefined });
   }
   const id = g?.id ?? slug(String(inp.id ?? navn));
   const kodePrefix = (String(inp.kodePrefix ?? g?.kodePrefix ?? navn.split(/\s+/).map((w) => w[0]).join("").slice(0, 3)))
@@ -639,6 +739,12 @@ function validerSalon(inp: Record<string, unknown>, gammel?: Salon): { ok: true;
     pauseMin: tal("pauseMin", 10, 0, 120), intervalMin: tal("intervalMin", 15, 5, 60), varselMin: tal("varselMin", 60, 0, 2880),
     behandlinger, test: Boolean(inp.test ?? g?.test ?? false), aktiv: Boolean(inp.aktiv ?? g?.aktiv ?? true),
     oprettet: g?.oprettet ?? new Date().toISOString(),
+    omArtisten: String(inp.omArtisten ?? g?.omArtisten ?? "").slice(0, 1500) || undefined,
+    stikord: (Array.isArray(inp.stikord) ? inp.stikord : g?.stikord ?? []).map((x: unknown) => String(x).slice(0, 40)).slice(0, 20),
+    praktisk: (Array.isArray(inp.praktisk) ? inp.praktisk : g?.praktisk ?? []).map((x: unknown) => String(x).slice(0, 120)).slice(0, 12),
+    billeder: (Array.isArray(inp.billeder) ? inp.billeder as Billede[] : g?.billeder ?? []).slice(0, 12)
+      .map((b) => ({ url: b.url && /^https:\/\//.test(b.url) ? String(b.url).slice(0, 500) : undefined, motiv: b.motiv, farver: b.farver, tekst: String(b.tekst ?? "").slice(0, 80) })),
+    dataVersion: g?.dataVersion,
   } };
 }
 async function admin(req: Request, url: URL): Promise<Response> {
@@ -687,10 +793,21 @@ const html = (titel: string, krop: string, ekstra = "", status = 200) => new Res
   { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 const testBanner = (s?: Salon) => (s ? s.test : true) ? `<p class="test"><strong>Test.</strong> ${s ? `${esc(s.navn)} er opdigtet.` : "Saloner markeret som test er opdigtede."}</p>` : "";
 
-async function forside(): Promise<Response> {
+const SALON_CSS = `.salon{display:grid;grid-template-columns:140px 1fr;gap:14px;align-items:start}.salon img{width:140px;border-radius:12px;display:block}
+@media (max-width:480px){.salon{grid-template-columns:1fr}.salon img{width:100%}}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0}.chips span{font-size:.8rem;padding:2px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
+.galleri{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:12px 0}.galleri figure{margin:0}.galleri img{width:100%;border-radius:12px;display:block}.galleri figcaption{font-size:.8rem;color:var(--muted);margin-top:4px}
+.beh{border-top:1px solid var(--line);padding:8px 0}.beh:first-of-type{border-top:0}`;
+async function forside(forsideUrl?: URL): Promise<Response> {
   const saloner = await alleSaloner();
-  return html(BRAND, `${faner("/")}${saloner.some((s) => s.test) ? testBanner() : ""}<h1>${esc(BRAND)}</h1><p class="muted">Ledige tider og booking hos uafhængige saloner – også via din AI-assistent.</p>` +
-    saloner.map((s) => `<div class="kort"><h2><a href="/s/${s.id}">${esc(s.navn)}</a>${s.test ? " <small class='muted'>(test)</small>" : ""}</h2><p>${esc(s.omraade)} · ${kategorierAf(s).join(", ")} · ${prisSpand(s)}</p><p class="muted">${esc(s.beskrivelse)}</p></div>`).join(""));
+  const q = (forsideUrl?.searchParams.get("q") ?? "").slice(0, 120);
+  const ord = soegeord(q);
+  const vis = ord.length ? saloner.map((s) => ({ s, t: soegSalon(s, ord) })).filter((x) => x.t.score > 0).sort((a, b) => b.t.score - a.t.score) : saloner.map((s) => ({ s, t: { score: 0, ramt: [] as string[] } }));
+  if (ord.length) await log({ type: "sidesoegning", klient: "Bookingside", antal: vis.length, grund: "fritekst: " + ord.join(" ").slice(0, 40) });
+  return html(BRAND, `${faner("/")}${saloner.some((s) => s.test) ? testBanner() : ""}<h1>${esc(BRAND)}</h1><p class="muted">Ledige tider og booking hos uafhængige saloner – også via din AI-assistent.</p>
+<form method="get" class="kort" role="search" style="display:flex;gap:8px;align-items:center"><input name="q" value="${esc(q)}" placeholder="Søg efter stil, farve eller ønske – fx chili-røde negle" aria-label="Søg"><button style="width:auto;margin:0">Søg</button></form>` +
+    (ord.length && !vis.length ? `<p class="test">Ingen saloner matcher "${esc(q)}".</p>` : "") +
+    vis.map(({ s, t }) => `<div class="kort salon">${s.billeder?.length ? `<a href="/s/${s.id}"><img src="${esc(billedUrl(s, 0))}" alt="${esc(s.billeder[0].tekst)}" loading="lazy"></a>` : ""}<div><h2 style="margin:0"><a href="/s/${s.id}">${esc(s.navn)}</a>${s.test ? " <small class='muted'>(test)</small>" : ""}</h2><p style="margin:4px 0">${esc(s.omraade)} · ${kategorierAf(s).join(", ")} · ${prisSpand(s)}</p>${t.ramt.length ? `<p style="margin:4px 0">Matcher: <strong>${t.ramt.map(esc).join(", ")}</strong></p>` : ""}<p class="muted" style="margin:4px 0">${esc(s.beskrivelse)}</p>${s.stikord?.length ? `<p class="chips">${s.stikord.map((x) => `<span>${esc(x)}</span>`).join("")}</p>` : ""}</div></div>`).join(""),
+    `<style>${SALON_CSS}</style>`);
 }
 async function salonside(s: Salon, behId: string | null, besked = ""): Promise<Response> {
   const beh = s.behandlinger.find((b) => b.id === behId) ?? s.behandlinger[0];
@@ -703,21 +820,25 @@ async function salonside(s: Salon, behId: string | null, besked = ""): Promise<R
       t.map((m) => { const k = iKbh(m); return `<label><input type="radio" name="tid" value="${k.dato}T${k.tid}" required><span>${k.tid}</span></label>`; }).join("") + "</div>";
   }
   const valg = s.behandlinger.map((b) => `<option value="${b.id}"${b.id === beh.id ? " selected" : ""}>${esc(b.navn)} – ${b.pris} kr – ${b.minutter} min</option>`).join("");
-  return html(`${s.navn} – book tid`, `${testBanner(s)}<p><a href="/">← Alle saloner</a></p><h1>${esc(s.navn)}</h1>
-<p>${esc(s.omraade)}</p><p class="muted">${esc(s.beskrivelse)}</p>${besked}
+  const galleri = s.billeder?.length ? `<div class="galleri">${s.billeder.map((b, i) => `<figure><img src="${esc(billedUrl(s, i))}" alt="${esc(b.tekst)}" loading="lazy"><figcaption>${esc(b.tekst)}</figcaption></figure>`).join("")}</div>` : "";
+  const om = `${s.omArtisten ? `<div class="kort"><h2 style="margin-top:0">Om ${s.test ? "artisten" : "os"}</h2><p>${esc(s.omArtisten)}</p>${s.stikord?.length ? `<p class="chips">${s.stikord.map((x) => `<span>${esc(x)}</span>`).join("")}</p>` : ""}</div>` : ""}` +
+    `<div class="kort"><h2 style="margin-top:0">Behandlinger</h2>${s.behandlinger.map((b) => `<div class="beh"><strong>${esc(b.navn)}</strong> – ${b.pris} kr · ${b.minutter} min${b.beskrivelse ? `<br><span class="muted">${esc(b.beskrivelse)}</span>` : ""}</div>`).join("")}</div>` +
+    `${s.praktisk?.length ? `<div class="kort"><h2 style="margin-top:0">Praktisk</h2><ul>${s.praktisk.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}`;
+  return html(`${s.navn} – book tid`, `${faner("/")}${testBanner(s)}<p><a href="/">← Alle saloner</a></p><h1>${esc(s.navn)}</h1>
+<p>${esc(s.omraade)}</p><p class="muted">${esc(s.beskrivelse)}</p>${galleri}${besked}
 <form method="get" class="kort"><label for="b">Behandling</label><select id="b" name="b" onchange="this.form.submit()">${valg}</select><noscript><button>Vis tider</button></noscript></form>
 <form method="post" action="/s/${s.id}/book" class="kort"><input type="hidden" name="behandling" value="${beh.id}">
 <h2 style="margin-top:0">Ledige tider til ${esc(beh.navn)}</h2>${tider || "<p>Ingen ledige tider de næste 7 dage.</p>"}
 <label for="navn">Dit navn</label><input id="navn" name="navn" required maxlength="60" autocomplete="name">
 <label for="tlf">Telefon (valgfrit)</label><input id="tlf" name="telefon" maxlength="20" autocomplete="tel" inputmode="tel">
-<button type="submit">Book tiden</button><p class="muted">Betaling sker hos salonen. Du får en bookingkode og et link til at aflyse.</p></form>`);
+<button type="submit">Book tiden</button><p class="muted">Betaling sker hos salonen. Du får en bookingkode og et link til at aflyse.</p></form>${om}`, `<style>${SALON_CSS}</style>`);
 }
 
 // ---------- Faneblade ----------
 const NAV_CSS = `.faner{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:0 0 16px;padding-bottom:8px}
 .faner a{padding:8px 14px;border-radius:999px;text-decoration:none;color:var(--fg);font-weight:600}.faner a.valgt{background:var(--accent);color:#fff}.faner a:not(.valgt):hover{background:var(--card)}`;
 const faner = (aktiv: string) => `<style>${NAV_CSS}</style><nav class="faner" aria-label="Sider">` +
-  [["/", "Saloner"], ["/kalender", "Kalender"], ["/dashboard", "Dashboard"], ["/status", "Status"]]
+  [["/", "Saloner"], ["/kalender", "Kalender"], ["/dashboard", "Dashboard"], ["/intern", "Intern"], ["/status", "Status"]]
     .map(([h, t]) => `<a href="${h}"${h === aktiv ? ' class="valgt" aria-current="page"' : ""}>${t}</a>`).join("") + "</nav>";
 
 // ---------- Kalender: se og ret salonernes kalender ----------
@@ -832,6 +953,68 @@ async function kalenderPost(req: Request, url: URL): Promise<Response> {
   return tilbage("");
 }
 
+// ---------- Intern: projektets egne analyser, krypteret med en kode (repoet er offentligt) ----------
+type Krypt = { iv: string; data: string };
+type InternPakke = { salt: string; iter: number; tjek: Krypt; sider: Record<string, Krypt> };
+const INTERN_SIDER: { id: string; titel: string; tekst: string }[] = [
+  { id: "projektkort", titel: "Projektkort", tekst: "Status, kæden af ubeviste led, spor, tests og åbne spørgsmål." },
+  { id: "investorcase", titel: "Investorcase og realiserbarhed", tekst: "Bevistrappe, Lean Canvas, antagelser, markedsberegner, aktører, voldgrav, risici og plan." },
+  { id: "rute", titel: "Ruten fra kunde til salon", tekst: "Flowdiagram over hvert led – hvad er bevist, og hvad mangler." },
+];
+let internPakke: InternPakke | null = null;
+const noegler = new Map<string, CryptoKey>();
+const fraB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+async function hentPakke(): Promise<InternPakke | null> {
+  if (internPakke) return internPakke;
+  try { internPakke = JSON.parse(await Deno.readTextFile(new URL("./intern/analyser.json", import.meta.url))); } catch { internPakke = null; }
+  return internPakke;
+}
+async function dekrypter(kode: string, k: Krypt): Promise<string | null> {
+  const p = await hentPakke();
+  if (!p || !kode) return null;
+  try {
+    let key = noegler.get(kode);
+    if (!key) {
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(kode), "PBKDF2", false, ["deriveKey"]);
+      key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: fraB64(p.salt), iterations: p.iter, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    }
+    const ud = new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: fraB64(k.iv) }, key, fraB64(k.data)));
+    if (noegler.size < 20) noegler.set(kode, key);
+    return ud;
+  } catch { return null; }
+}
+const internKode = (req: Request) => decodeURIComponent((req.headers.get("cookie") ?? "").match(/(?:^|;\s*)bb_intern=([^;]+)/)?.[1] ?? "");
+async function kodeOk(kode: string): Promise<boolean> {
+  const p = await hentPakke();
+  return !!p && (await dekrypter(kode, p.tjek)) === "bookbar-intern-ok";
+}
+async function intern(req: Request, url: URL): Promise<Response> {
+  const p = await hentPakke();
+  if (url.pathname === "/intern/log-ind" && req.method === "POST") {
+    const kode = String((await req.formData()).get("kode") ?? "").trim().toLowerCase();
+    if (!(await kodeOk(kode))) return internLogin("Forkert kode.");
+    return new Response(null, { status: 303, headers: { location: "/intern", "set-cookie": `bb_intern=${encodeURIComponent(kode)}; Path=/intern; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax` } });
+  }
+  if (url.pathname === "/intern/log-ud") return new Response(null, { status: 303, headers: { location: "/intern", "set-cookie": "bb_intern=; Path=/intern; Max-Age=0; HttpOnly; Secure; SameSite=Lax" } });
+  const kode = internKode(req);
+  if (!p) return html("Intern", `${faner("/intern")}<h1>Intern</h1><p>Analyserne er ikke lagt op endnu.</p>`);
+  if (!(await kodeOk(kode))) return internLogin("");
+  const m = url.pathname.match(/^\/intern\/([a-z-]+)$/);
+  if (m && p.sider[m[1]]) {
+    const side = await dekrypter(kode, p.sider[m[1]]);
+    if (!side) return internLogin("Koden virker ikke længere.");
+    const bar = `<div style="position:sticky;top:0;z-index:99;background:#b8476b;color:#fff;font:600 14px system-ui,sans-serif;padding:8px 16px"><a href="/intern" style="color:#fff">← Intern</a> · kun til internt brug</div>`;
+    return new Response(side.replace(/<body([^>]*)>/i, (t) => t + bar).replace(/<head>/i, '<head><meta name="robots" content="noindex">'),
+      { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "x-robots-tag": "noindex" } });
+  }
+  return html(`${BRAND} – intern`, `${faner("/intern")}<h1>Intern</h1><p class="muted">Projektets egne analyser. Kun for os – siderne er krypterede og åbnes med koden.</p>` +
+    INTERN_SIDER.filter((s) => p.sider[s.id]).map((s) => `<div class="kort"><h2 style="margin:0"><a href="/intern/${s.id}">${esc(s.titel)}</a></h2><p class="muted" style="margin:4px 0 0">${esc(s.tekst)}</p></div>`).join("") +
+    `<div class="kort"><h2 style="margin:0"><a href="https://claude.ai/code/artifact/94a932a0-bb84-4e6e-91d5-4655ba4f9e07" rel="noopener">Forretningsoplæg – Veninde-platformen</a></h2><p class="muted" style="margin:4px 0 0">Claude-dokument fra 8. oktober. Åbnes i Claude med din konto. Bemærk: betalingsmodellen er genåbnet siden.</p></div>` +
+    `<p><a href="/intern/log-ud">Log ud</a></p>`, `<meta name="robots" content="noindex">`);
+}
+const internLogin = (fejl: string) => html(`${BRAND} – intern`, `${faner("/intern")}<h1>Intern</h1><p class="muted">Projektets egne analyser. Skriv koden for at åbne dem.</p>${fejl ? `<p class="test">${esc(fejl)}</p>` : ""}
+<form method="post" action="/intern/log-ind" class="kort"><label for="k">Kode</label><input id="k" name="kode" type="password" autocomplete="current-password" required><button type="submit">Åbn</button></form>`, `<meta name="robots" content="noindex">`, fejl ? 401 : 200);
+
 // ---------- Dashboard (kun anonyme tal fra hændelsesloggen) ----------
 const OPSLAG = ["find_saloner", "vis_behandlinger", "vis_ledige_tider"];
 async function salonNavne(): Promise<Map<string, string>> {
@@ -877,7 +1060,7 @@ function opsummer(log: Haendelse[], dage: number | null, navne: Map<string, stri
     dagliste.push({ dato: d, opslag: l.filter((h) => OPSLAG.includes(h.type)).length, bookinger: l.filter((h) => h.type === "booking").length });
   }
   const ubesvaret = [
-    ...log.filter((h) => h.type === "find_saloner" && h.antal === 0).map((h) => `Søgte salon${h.kategori ? " med " + h.kategori : ""}${h.omraade ? " i " + h.omraade : ""} – ingen fundet`),
+    ...log.filter((h) => h.type === "find_saloner" && h.antal === 0).map((h) => `Søgte salon${h.kategori ? " med " + h.kategori : ""}${h.omraade ? " i " + h.omraade : ""}${h.grund?.startsWith("fritekst") ? ` ("${h.grund.slice(10)}")` : ""} – ingen fundet`),
     ...log.filter((h) => h.type === "vis_ledige_tider" && h.antal === 0).map((h) => `Ingen ledige tider${h.behandling ? " til " + h.behandling : ""} hos ${h.salon === "alle" ? "alle saloner" : sn(h.salon)}${h.dageFrem !== undefined ? `, ${h.dageFrem} dage frem` : ""}`),
     ...log.filter((h) => h.type === "booking_afvist").map((h) => `Booking afvist hos ${sn(h.salon)} (${h.grund ?? "ukendt"})`),
   ];
@@ -902,7 +1085,7 @@ async function dashboardJson(url: URL): Promise<Response> {
   return Response.json({ periode, ...opsummer(log, dage, await salonNavne()) }, { headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } });
 }
 const TYPENAVN: Record<string, string> = {
-  forbindelse: "Ny samtale", find_saloner: "Søgte saloner", vis_behandlinger: "Så behandlinger", vis_ledige_tider: "Søgte ledige tider",
+  sidesoegning: "Søgning på siden", forbindelse: "Ny samtale", find_saloner: "Søgte saloner", vis_behandlinger: "Så behandlinger", vis_ledige_tider: "Søgte ledige tider",
   booking: "Booking", booking_afvist: "Booking afvist", aflysning: "Aflysning", aflysning_ukendt_kode: "Aflysning – ukendt kode", sidevisning: "Bookingside vist",
 };
 const DASH_CSS = `html body{max-width:960px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
@@ -1015,11 +1198,19 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       }
       return new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
+    if (url.pathname === "/intern" || url.pathname.startsWith("/intern/")) return await intern(req, url);
+    if (url.pathname === "/robots.txt") return new Response("User-agent: *\nDisallow: /intern\nDisallow: /kalender\nDisallow: /booking/\n", { headers: { "content-type": "text/plain" } });
     if (url.pathname === "/kalender") return await kalenderside(url);
     if (url.pathname.startsWith("/kalender/") && req.method === "POST") return await kalenderPost(req, url);
     if (url.pathname === "/dashboard") return await dashboard(url);
     if (url.pathname === "/dashboard.json") return await dashboardJson(url);
-    if (url.pathname === "/") return await forside();
+    const bil = url.pathname.match(/^\/billede\/([a-z0-9-]+)\/(\d+)\.svg$/);
+    if (bil) {
+      const s = await hentSalon(bil[1]); const b = s?.billeder?.[Number(bil[2])];
+      if (!s || !b || b.url) return new Response("Ikke fundet", { status: 404 });
+      return new Response(illustration(b), { headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=3600" } });
+    }
+    if (url.pathname === "/") return await forside(url);
     return new Response("Ikke fundet", { status: 404 });
   } catch (e) {
     return new Response("Fejl: " + (e as Error).message, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
