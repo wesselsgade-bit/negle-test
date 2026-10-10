@@ -1,10 +1,10 @@
-# negle-test
+# Bookbar (test)
 
-Testside for en opdigtet negleartist (Neglestudie Lyngblomst). Bruges til at teste, om AI-assistenter kan læse ledige tider. Der kan ikke bookes.
+Alt kører nu på **https://bookbar.dk** (Deno Deploy, appen `lyngblomst`, kode i `server.ts`).
 
-## Version 0.2 – to saloner, én forbindelse (9/10-2026)
-`server.ts` er nu "Negle-korridoren (test)" med to opdigtede saloner:
-Neglestudie Lyngblomst (Brøndby, negle og vipper) og Neglebaren Kastanje (Hvidovre, kun negle).
-Uden Google-opsætning kører den med faste testtider. Med miljøvariablerne
-`GOOGLE_SA_KEY`, `CAL_LYNGBLOMST` og `CAL_KASTANJE` læser den "Ledig"-blokke fra
-salonernes Google-kalendere og skriver bookinger direkte ind. Tjek opsætningen på `/status`.
+- MCP-forbindelse: https://bookbar.dk/mcp
+- Saloner og booking: https://bookbar.dk · Book via din AI: https://bookbar.dk/ai
+- Kalender, dashboard, intern og status: faner på siden
+- Den gamle adresse (lyngblomst.wesselsgade-bit.deno.net) viderestiller til bookbar.dk; kun `/mcp` svarer stadig dér, så installerede forbindelser virker.
+- `docs/` (GitHub Pages) viderestiller kun til bookbar.dk. Den gamle genbygning er fjernet.
+- `intern/analyser.json` er krypteret og åbnes med koden på /intern.

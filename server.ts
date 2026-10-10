@@ -26,9 +26,11 @@
 //   GET|POST|PUT /admin/saloner[/<id>]   administration (kræver ADMIN_TOKEN)
 
 const TZ = "Europe/Copenhagen";
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const env = (k: string) => Deno.env.get(k) ?? "";
 const BRAND = env("BRAND") || "Bookbar (test)";
+// Den ene offentlige adresse. Alt andet (fx den gamle deno.net-adresse) viderestilles hertil – undtagen /mcp, så installerede forbindelser virker videre.
+const PUBLIC_ORIGIN = (env("PUBLIC_ORIGIN") || "https://bookbar.dk").replace(/\/$/, "");
 
 // ---------- Datamodel ----------
 const KATEGORIER = ["negle", "vipper", "bryn", "hud", "andet"] as const;
@@ -62,8 +64,8 @@ const TESTSALONER: Salon[] = [
     behandlinger: [
       { id: "gellak", navn: "Gellak på egne negle", kategori: "negle", slags: "enkelt", materiale: "gellak", pris: 350, minutter: 60,
         beskrivelse: "Holder 2–3 uger. Vælg mellem ca. 120 farver – også stærke røde som chili og bordeaux. Inkl. neglebåndspleje og fil.", stikord: ["farve", "chili-rød", "rød", "nude", "holdbar"], billede: 0 },
-      { id: "nyt-saet", navn: "Nyt sæt gelénegle – French", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 450, minutter: 90,
-        beskrivelse: "Forlængelse med gelé på skabelon. Klassisk hvid French eller farvet French. Længde og form efter ønske (mandel, kiste, firkantet).", stikord: ["french", "forlængelse", "lange negle", "mandel", "bryllup"], billede: 1 },
+      { id: "nyt-saet", navn: "Nyt sæt gelénegle", kategori: "negle", slags: "nyt", materiale: "gelé", pris: 450, minutter: 90,
+        beskrivelse: "Forlængelse med gelé på skabelon. Længde og form efter ønske (mandel, kiste, firkantet). Vælg ensfarvet, French eller nail art – fx til fest, bryllup eller Halloween.", stikord: ["french", "forlængelse", "lange negle", "mandel", "kiste", "nail art", "fest", "bryllup"], billede: 1 },
       { id: "opfyldning", navn: "Opfyldning af gelénegle", kategori: "negle", slags: "opfyldning", materiale: "gelé", pris: 380, minutter: 75,
         beskrivelse: "Efter 3–4 uger. Udvoksning fyldes op, og du kan skifte farve. Nail art kan tilkøbes på stedet.", stikord: ["opfyldning", "skift farve", "nail art"] },
       { id: "vippeloeft", navn: "Vippeløft med farve", kategori: "vipper", slags: "enkelt", pris: 400, minutter: 60,
@@ -80,7 +82,7 @@ const TESTSALONER: Salon[] = [
       { motiv: "glimmer", farver: ["#e8c1c5", "#d4af37"], tekst: "Rosa med guldglimmer" },
       { motiv: "vipper", tekst: "Vippeløft med farve" },
     ],
-    dataVersion: 2,
+    dataVersion: 3,
     test: true, aktiv: true, oprettet: "2026-10-09",
   },
   {
@@ -776,7 +778,7 @@ async function admin(req: Request, url: URL): Promise<Response> {
 }
 
 // ---------- Sider ----------
-let ORIGIN = "https://lyngblomst.wesselsgade-bit.deno.net";
+let ORIGIN = PUBLIC_ORIGIN;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 const CSS = `:root{--bg:#fff;--fg:#222;--muted:#666;--card:#faf7f8;--accent:#b8476b;--line:#e6dde1;--warn:#fff3cd;--warnb:#e0c060}
 @media (prefers-color-scheme:dark){:root{--bg:#161416;--fg:#eee;--muted:#aaa;--card:#221e21;--accent:#e07fa0;--line:#3a3337;--warn:#3a3218;--warnb:#806a20}}
@@ -833,6 +835,37 @@ async function salonside(s: Salon, behId: string | null, besked = ""): Promise<R
 <label for="tlf">Telefon (valgfrit)</label><input id="tlf" name="telefon" maxlength="20" autocomplete="tel" inputmode="tel">
 <button type="submit">Book tiden</button><p class="muted">Betaling sker hos salonen. Du får en bookingkode og et link til at aflyse.</p></form>${om}`, `<style>${SALON_CSS}</style>`);
 }
+
+// ---------- "Book via din AI": kundens første ja ----------
+const AI_CSS = `.ai .btn{display:block;text-align:center;padding:14px 16px;border-radius:12px;font-weight:600;text-decoration:none;margin-top:8px}
+.ai .primaer{background:var(--accent);color:#fff}.ai .sekundaer{background:var(--card);border:1px solid var(--line);color:var(--fg)}
+.ai .proev{display:flex;gap:8px;align-items:center;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:8px}
+.ai .proev span{flex:1;font-size:.95rem;word-break:break-word}.ai .kopi{width:auto;margin:0;padding:6px 10px;font-size:.85rem;background:var(--card);color:var(--fg);border:1px solid var(--line)}
+.ai details{margin-top:10px}.ai summary{cursor:pointer;color:var(--muted)}.ai .qr{text-align:center}.ai .qr img{background:#fff;padding:10px;border-radius:12px;width:200px;height:200px;image-rendering:pixelated}`;
+async function aiSide(url: URL): Promise<Response> {
+  const s = url.searchParams.get("salon") ? await hentSalon(url.searchParams.get("salon")) : null;
+  const navn = s ? s.navn : BRAND.replace(/ \(test\)$/, "");
+  const mcp = `${ORIGIN}/mcp`;
+  const claudeLink = `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=${encodeURIComponent(BRAND)}&connectorUrl=${encodeURIComponent(mcp)}`;
+  const proev = s ? `Jeg vil gerne booke ${s.behandlinger[0]?.navn.toLowerCase() ?? "en tid"} hos ${s.navn} i næste uge. Hvad er ledigt?` : "Jeg skal have lavet negle i næste uge. Kan du finde og booke en ledig tid?";
+  const selv = `${ORIGIN}/ai${s ? "?salon=" + s.id : ""}`;
+  await log({ type: "ai_side", klient: "Bookingside", salon: s?.id });
+  return html(`Book ${navn} via din AI`, `${faner("")}${testBanner(s ?? undefined)}<div class="ai"><h1>Book ${esc(navn)} via din AI</h1>
+<p class="muted">Tilføj ${esc(BRAND.replace(/ \(test\)$/, ""))} én gang. Bagefter kan du bare skrive "book negle i næste uge" til din assistent – så finder den ledige tider${s ? "" : " hos alle vores saloner"} og booker for dig.</p>
+<div class="kort"><h2 style="margin:0">Claude</h2><p class="muted">Virker i Claude-appen og på claude.ai. Den gratis plan kan have én egen forbindelse.</p>
+<a class="btn primaer" href="${esc(claudeLink)}">Tilføj til Claude</a>
+<details><summary>Hvad sker der, når jeg trykker?</summary><ol><li>Claude åbner med navn og adresse udfyldt. Du ser en advarsel om, at forbindelsen kommer fra et link – det er normalt, fordi vi endnu ikke er i Claudes katalog.</li><li>Tryk <strong>Fortsæt</strong>, så <strong>Tilføj</strong>, så <strong>Opret forbindelse</strong>.</li><li>Første gang Claude bruger os, spørger den om lov. Vælg <strong>Tillad altid</strong>, så slipper du for at blive spurgt igen.</li></ol></details></div>
+<div class="kort"><h2 style="margin:0">ChatGPT</h2><p class="muted">Kommer, når vi er godkendt i ChatGPTs app-katalog. Indtil da kan du bruge Claude eller booke direkte her på siden.</p></div>
+<div class="kort"><h2 style="margin:0">Gemini, Grok og andre</h2><p class="muted">Tilføjes under indstillinger som egen forbindelse (custom connector). Indsæt denne adresse:</p>
+<div class="proev"><span id="mcpurl">${esc(mcp)}</span><button class="kopi" data-kopi="mcpurl">Kopiér</button></div></div>
+<div class="kort"><h2 style="margin:0">Prøv bagefter</h2><p class="muted">Start en ny samtale og skriv fx:</p><div class="proev"><span id="p1">${esc(proev)}</span><button class="kopi" data-kopi="p1">Kopiér</button></div></div>
+<div class="kort"><h2 style="margin:0">Uden AI</h2><p class="muted">Se ledige tider og book direkte.</p><a class="btn sekundaer" href="${s ? `/s/${s.id}` : "/"}">Se ledige tider</a></div>
+<div class="kort qr"><h2 style="margin:0">Del siden</h2><p class="muted">Scan med telefonens kamera.</p><img id="qr" alt="QR-kode til denne side" width="200" height="200"><p class="muted" style="font-size:.85rem">${esc(selv.replace(/^https:\/\//, ""))}</p></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script>document.querySelectorAll('.kopi').forEach(b=>b.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(document.getElementById(b.dataset.kopi).textContent.trim());b.textContent='Kopieret';setTimeout(()=>b.textContent='Kopiér',1500)}catch(e){}}));
+try{const q=qrcode(0,'M');q.addData(${JSON.stringify(selv)});q.make();document.getElementById('qr').src=q.createDataURL(8,4)}catch(e){}</script>`, `<style>${AI_CSS}</style>`);
+}
+const aiKort = (s?: Salon | null) => `<div class="kort"><h2 style="margin-top:0">Næste gang: spørg bare din AI</h2><p class="muted">Tilføj ${esc(BRAND.replace(/ \(test\)$/, ""))} til Claude én gang, så kan du booke${s ? ` hos ${esc(s.navn)}` : ""} ved at skrive eller sige det. Del gerne linket med en veninde.</p><p><a href="/ai${s ? "?salon=" + s.id : ""}"><strong>Book via din AI →</strong></a></p></div>`;
 
 // ---------- Faneblade ----------
 const NAV_CSS = `.faner{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin:0 0 16px;padding-bottom:8px}
@@ -1085,7 +1118,7 @@ async function dashboardJson(url: URL): Promise<Response> {
   return Response.json({ periode, ...opsummer(log, dage, await salonNavne()) }, { headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } });
 }
 const TYPENAVN: Record<string, string> = {
-  sidesoegning: "Søgning på siden", forbindelse: "Ny samtale", find_saloner: "Søgte saloner", vis_behandlinger: "Så behandlinger", vis_ledige_tider: "Søgte ledige tider",
+  ai_side: "\"Book via din AI\" vist", sidesoegning: "Søgning på siden", forbindelse: "Ny samtale", find_saloner: "Søgte saloner", vis_behandlinger: "Så behandlinger", vis_ledige_tider: "Søgte ledige tider",
   booking: "Booking", booking_afvist: "Booking afvist", aflysning: "Aflysning", aflysning_ukendt_kode: "Aflysning – ukendt kode", sidevisning: "Bookingside vist",
 };
 const DASH_CSS = `html body{max-width:960px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
@@ -1113,20 +1146,23 @@ async function dashboard(url: URL): Promise<Response> {
   const krop = `${faner("/dashboard")}${testBanner()}<h1>Dashboard</h1>
 <p class="muted">Anonyme tal fra forbindelsen: hvad AI-assistenterne slår op, booker og aflyser. Ingen navne, telefonnumre eller IP-adresser gemmes.</p>
 <nav class="periode" aria-label="Periode">${vaelg}</nav>
-<div class="tiles">${tile(tal(o.samtaler), "Samtaler med forbindelsen")}${tile(tal(o.opslag), "Opslag (saloner, priser, tider)")}${tile(tal(o.bookinger), `Bookinger (${o.aiBookinger} via AI)`)}${tile(tal(o.aflysninger), "Aflysninger" + (o.aflysningsandel !== null ? ` (${o.aflysningsandel} %)` : ""))}
+<div class="tiles">${tile(tal(o.samtaler), "Nye tilkoblinger (tallet er for lavt)")}${tile(tal(o.opslag), "Opslag (saloner, priser, tider)")}${tile(tal(o.bookinger), `Bookinger (${o.aiBookinger} via AI)`)}${tile(tal(o.aflysninger), "Aflysninger" + (o.aflysningsandel !== null ? ` (${o.aflysningsandel} %)` : ""))}
 ${tile(tal(o.nettoKr) + " kr", `Booket for netto (brutto ${tal(o.bookingKr)} kr)`)}${tile(o.soegTilBooking !== null ? o.soegTilBooking + " %" : "–", "Tidssøgninger der blev til en AI-booking")}${tile(tal(o.afvist), "Bookinger afvist (tid ikke ledig)")}${tile(o.dageFremMedian !== null ? o.dageFremMedian + " dage" : "–", "Typisk booket så langt frem")}</div>
 ${bars("opslag", "Opslag pr. dag")}${bars("bookinger", "Bookinger pr. dag")}
 ${tabel("Pr. assistent", o.prAssistent, true)}${tabel("Pr. salon", o.prSalon)}${tabel("Pr. kategori", o.prKategori)}
 ${o.ubesvaret.length ? `<div class="kort"><h2 style="margin-top:0">Efterspørgsel uden svar</h2><ul>${o.ubesvaret.map((u) => `<li>${esc(u)}</li>`).join("")}</ul></div>` : ""}
 <div class="kort tabwrap"><h2 style="margin-top:0">Seneste hændelser</h2>${o.seneste.length ? `<table><thead><tr><th>Tid</th><th>Hvad</th><th>Hvem</th><th>Salon</th><th class="n">Pris</th></tr></thead><tbody>` +
     o.seneste.map((h) => { const k = iKbh(Date.parse(h.t)); return `<tr><td style="white-space:nowrap">${k.dato.slice(8)}/${k.dato.slice(5,7)} ${k.tid}</td><td>${esc(TYPENAVN[h.type] ?? h.type)}${h.behandling ? " · " + esc(h.behandling) : ""}${typeof h.antal === "number" ? ` (${h.antal})` : ""}</td><td>${esc(h.klient)}</td><td>${esc(h.salon ?? "")}</td><td class="n">${h.pris && (h.type === "booking" || h.type === "aflysning") ? tal(h.pris) : ""}</td></tr>`; }).join("") + "</tbody></table>" : "<p>Ingen hændelser endnu.</p>"}</div>
-<p class="muted">Tallene starter 10. oktober 2026. "Samtaler" tælles, når en assistent kobler på forbindelsen – det er ikke antal unikke brugere. Rå tal: <a href="/dashboard.json?periode=${periode}">dashboard.json</a>.</p>`;
+<p class="muted">Tallene starter 10. oktober 2026. "Samtaler" tælles kun, når en assistent kobler forfra på forbindelsen – Claude genbruger ofte forbindelsen, så tallet er for lavt. Opslag og bookinger er de pålidelige tal. Rå tal: <a href="/dashboard.json?periode=${periode}">dashboard.json</a>.</p>`;
   return html(`${BRAND} – dashboard`, krop, `<style>${DASH_CSS}</style><meta http-equiv="refresh" content="60">`);
 }
 
 if (typeof Deno.serve === "function") Deno.serve(async (req) => {
   const url = new URL(req.url);
-  ORIGIN = url.origin.replace(/^http:\/\/(?!localhost|127\.)/, "https://");
+  const lokal = /^(localhost|127\.)/.test(url.hostname);
+  ORIGIN = lokal ? url.origin : PUBLIC_ORIGIN;
+  if (!lokal && url.origin !== PUBLIC_ORIGIN && url.pathname !== "/mcp" && (req.method === "GET" || req.method === "HEAD"))
+    return new Response(null, { status: 301, headers: { location: PUBLIC_ORIGIN + url.pathname + url.search } });
   try {
     if (url.pathname === "/mcp") {
       if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
@@ -1157,7 +1193,7 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
           return salonside(s, beh.id, `<p class="test">${esc(r.fejl)}</p>`);
         }
         await log({ type: "booking", klient: "Bookingside", kilde: "formular", salon: s.id, behandling: beh.id, kategori: beh.kategori, pris: beh.pris, dageFrem: dageFra(dato) });
-        return html("Booket", `${testBanner(s)}<h1>Du er booket</h1><div class="kort"><p><strong>${esc(beh.navn)}</strong><br>${esc(s.navn)}, ${esc(s.omraade)}<br>${danskDato(dato)} kl. ${tid}<br>${beh.pris} kr, betales i salonen<br>Bookingkode: <strong>${r.b.kode}</strong></p></div><p><a href="/booking/${r.b.token}">Se eller aflys din booking</a> – gem linket.</p>`);
+        return html("Booket", `${testBanner(s)}<h1>Du er booket</h1><div class="kort"><p><strong>${esc(beh.navn)}</strong><br>${esc(s.navn)}, ${esc(s.omraade)}<br>${danskDato(dato)} kl. ${tid}<br>${beh.pris} kr, betales i salonen<br>Bookingkode: <strong>${r.b.kode}</strong></p></div><p><a href="/booking/${r.b.token}">Se eller aflys din booking</a> – gem linket.</p>${aiKort(s)}`);
       }
       if (!url.searchParams.get("b")) await log({ type: "sidevisning", klient: "Bookingside", salon: s.id });
       return await salonside(s, url.searchParams.get("b"));
@@ -1172,7 +1208,7 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
         return html("Aflyst", `${testBanner(s ?? undefined)}<h1>Aflyst</h1><p>Din tid hos ${esc(s?.navn ?? b.salon)} ${danskDato(b.dato)} kl. ${b.tid} er aflyst. Husk at slette aftalen i din egen kalender.</p>`);
       }
       const beh = s?.behandlinger.find((x) => x.id === b.behandling);
-      return html("Din booking", `${testBanner(s ?? undefined)}<h1>Din booking</h1><div class="kort"><p><strong>${esc(beh?.navn ?? b.behandling)}</strong><br>${esc(s?.navn ?? "")}, ${esc(s?.omraade ?? "")}<br>${danskDato(b.dato)} kl. ${b.tid}<br>${beh?.pris ?? ""} kr, betales i salonen<br>Bookingkode: ${b.kode}<br>Adresse: ${esc(s?.adresse ?? "")}</p></div><form method="post"><button type="submit">Aflys bookingen</button></form>`, `<meta name="robots" content="noindex">`);
+      return html("Din booking", `${testBanner(s ?? undefined)}<h1>Din booking</h1><div class="kort"><p><strong>${esc(beh?.navn ?? b.behandling)}</strong><br>${esc(s?.navn ?? "")}, ${esc(s?.omraade ?? "")}<br>${danskDato(b.dato)} kl. ${b.tid}<br>${beh?.pris ?? ""} kr, betales i salonen<br>Bookingkode: ${b.kode}<br>Adresse: ${esc(s?.adresse ?? "")}</p></div><form method="post"><button type="submit">Aflys bookingen</button></form>${s && s.aktiv ? aiKort(s) : ""}`, `<meta name="robots" content="noindex">`);
     }
     if (url.pathname === "/status") {
       const linjer: string[] = [];
@@ -1198,6 +1234,7 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       }
       return new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
+    if (url.pathname === "/ai" || url.pathname === "/ai.html") return await aiSide(url);
     if (url.pathname === "/intern" || url.pathname.startsWith("/intern/")) return await intern(req, url);
     if (url.pathname === "/robots.txt") return new Response("User-agent: *\nDisallow: /intern\nDisallow: /kalender\nDisallow: /booking/\n", { headers: { "content-type": "text/plain" } });
     if (url.pathname === "/kalender") return await kalenderside(url);
