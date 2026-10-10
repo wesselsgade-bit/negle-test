@@ -26,7 +26,7 @@
 //   GET|POST|PUT /admin/saloner[/<id>]   administration (kræver ADMIN_TOKEN)
 
 const TZ = "Europe/Copenhagen";
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const env = (k: string) => Deno.env.get(k) ?? "";
 const BRAND = env("BRAND") || "Bookbar (test)";
 
@@ -172,8 +172,45 @@ for (const t of TESTSALONER) if (!(await kget<Salon>(["salon", t.id]))) await ge
 // Bookinger
 type Booking = {
   kode: string; token: string; salon: string; dato: string; tid: string; minutter: number;
-  behandling: string; navn: string; telefon?: string; kilde: "ai" | "formular"; oprettet: string; eventId?: string;
+  behandling: string; navn: string; telefon?: string; kilde: "ai" | "formular"; oprettet: string; eventId?: string; pris?: number;
 };
+
+// ---------- Hændelseslog – anonym: ingen navne, telefonnumre, IP-adresser eller bookingkoder ----------
+type Haendelse = {
+  t: string; type: string; klient: string; salon?: string; kategori?: string; behandling?: string;
+  pris?: number; kilde?: string; dageFrem?: number; antal?: number; omraade?: string; grund?: string;
+};
+type Ctx = { klient: string; nySession?: string };
+async function log(h: Omit<Haendelse, "t">): Promise<void> {
+  const t = new Date().toISOString();
+  try { await kset(["log", t + "-" + crypto.randomUUID().slice(0, 6)], { t, ...h }); } catch { /* loggen må aldrig vælte en booking */ }
+}
+const dageFra = (dato: string) => Math.round((lokalMs(dato, "12:00") - lokalMs(nuIKbh().dato, "12:00")) / 86400000);
+function klientFraUA(ua: string): string {
+  const u = ua.toLowerCase();
+  if (u.includes("claude") || u.includes("anthropic")) return "Claude";
+  if (u.includes("openai") || u.includes("chatgpt")) return "ChatGPT";
+  if (u.includes("gemini") || u.includes("google")) return "Gemini";
+  if (u.includes("grok") || u.includes("xai")) return "Grok";
+  return ua ? "Andet (" + ua.slice(0, 24) + ")" : "Ukendt";
+}
+function klientNavn(info: unknown, ua: string): string {
+  const n = String((info as { name?: string } | undefined)?.name ?? "").toLowerCase();
+  if (n.includes("claude") || n.includes("anthropic")) return "Claude";
+  if (n.includes("openai") || n.includes("chatgpt")) return "ChatGPT";
+  if (n.includes("gemini")) return "Gemini";
+  if (n.includes("grok")) return "Grok";
+  if (n) return n.slice(0, 30);
+  return klientFraUA(ua);
+}
+async function klientForRequest(req: Request): Promise<string> {
+  const sid = req.headers.get("mcp-session-id");
+  if (sid && /^[a-f0-9-]{36}$/.test(sid)) {
+    const s = await kget<{ klient: string }>(["sess", sid]);
+    if (s) return s.klient;
+  }
+  return klientFraUA(req.headers.get("user-agent") ?? "");
+}
 async function gemBooking(b: Booking) {
   await kset(["booking", b.kode], b);
   await kset(["token", b.token], b.kode);
@@ -344,7 +381,7 @@ async function opretBooking(s: Salon, beh: Behandling, dato: string, tid: string
     }
     const kode = s.kodePrefix + "-" + crypto.randomUUID().replaceAll("-", "").slice(0, 4).toUpperCase();
     const b: Booking = { kode, token: crypto.randomUUID().replaceAll("-", "").slice(0, 24), salon: s.id, dato, tid,
-      minutter: beh.minutter, behandling: beh.id, navn, telefon, kilde, oprettet: new Date().toISOString() };
+      minutter: beh.minutter, behandling: beh.id, navn, telefon, kilde, oprettet: new Date().toISOString(), pris: beh.pris };
     const nu = iKbh(Date.now());
     b.eventId = await skrivEvent(s, `Booket: ${beh.navn} – ${navn} (${kode})`,
       `Booket ${kilde === "ai" ? "via AI-assistent" : "via bookingsiden"} gennem ${BRAND}.\nKunde: ${navn}${telefon ? `\nTelefon: ${telefon}` : ""}\n` +
@@ -360,10 +397,13 @@ async function opretBooking(s: Salon, beh: Behandling, dato: string, tid: string
     return { ok: true, b };
   } finally { laase.delete(s.id); }
 }
-async function aflys(b: Booking): Promise<void> {
+async function aflys(b: Booking, klient: string, kilde: string): Promise<void> {
   const s = await kget<Salon>(["salon", b.salon]);
   if (s && b.eventId) await sletEvent(s, b.eventId);
   await sletBooking(b);
+  const pris = b.pris ?? s?.behandlinger.find((x) => x.id === b.behandling)?.pris;
+  const kat = s?.behandlinger.find((x) => x.id === b.behandling)?.kategori;
+  await log({ type: "aflysning", klient, kilde, salon: b.salon, behandling: b.behandling, kategori: kat, pris, dageFrem: dageFra(b.dato) });
 }
 
 // ---------- Værktøjer (rene beskrivelser – ingen instrukser til assistenten) ----------
@@ -427,13 +467,15 @@ const aabningTekst = (s: Salon) => Object.entries(s.aabning).filter(([, v]) => v
   .map(([d, v]) => `${UGEDAGE[Number(d)].slice(0, 3)} ${v.map(([a, b]) => `${a}–${b}`).join(", ")}`).join("; ") || "ingen faste åbningstider";
 const behLinje = (b: Behandling) => `- ${b.navn} (id: ${b.id}) · ${b.kategori}${b.slags && b.slags !== "andet" ? ", " + b.slags : ""}${b.materiale ? ", " + b.materiale : ""} · ${b.pris} kr · ${b.minutter} min${b.beskrivelse ? ` · ${b.beskrivelse}` : ""}`;
 
-async function kald(navn: string, a: Record<string, unknown>) {
+async function kald(navn: string, a: Record<string, unknown>, ctx: Ctx = { klient: "Ukendt" }) {
+  const k = ctx.klient;
   const saloner = await alleSaloner();
   const ids = saloner.map((s) => s.id).join(", ");
   if (navn === "find_saloner") {
     const kat = a.kategori ? String(a.kategori) : null;
     const omr = a.omraade ? String(a.omraade).toLowerCase() : null;
     const liste = saloner.filter((s) => (!kat || s.behandlinger.some((b) => b.kategori === kat)) && (!omr || s.omraade.toLowerCase().includes(omr)));
+    await log({ type: "find_saloner", klient: k, kategori: kat ?? undefined, omraade: omr ? String(a.omraade).slice(0, 40) : undefined, antal: liste.length });
     if (!liste.length) return tekst(`Ingen saloner fundet${kat ? ` med ${kat}` : ""}${omr ? ` i ${a.omraade}` : ""}.`);
     return tekst(liste.map((s) => `- ${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}. Kategorier: ${kategorierAf(s).join(", ")}. ${s.beskrivelse} Priser: ${prisSpand(s)}. Åbent: ${aabningTekst(s)}.`).join("\n"));
   }
@@ -441,6 +483,7 @@ async function kald(navn: string, a: Record<string, unknown>) {
     const valgt = a.salon ? saloner.find((s) => s.id === a.salon) : null;
     if (a.salon && !valgt) return tekst(`Ukendt salon. Gyldige: ${ids}.`, true);
     const kat = a.kategori ? String(a.kategori) : null;
+    await log({ type: "vis_behandlinger", klient: k, salon: valgt?.id ?? "alle", kategori: kat ?? undefined });
     return tekst((valgt ? [valgt] : saloner).map((s) => {
       const bh = s.behandlinger.filter((b) => !kat || b.kategori === kat);
       return `${s.navn} (id: ${s.id})${testMaerke(s)} – ${s.omraade}\n${bh.length ? bh.map(behLinje).join("\n") : "- ingen behandlinger i kategorien"}`;
@@ -455,6 +498,7 @@ async function kald(navn: string, a: Record<string, unknown>) {
     if (a.salon && !valgt) return tekst(`Ukendt salon. Gyldige: ${ids}.`, true);
     const behId = a.behandling ? String(a.behandling) : null;
     const afsnit: string[] = [];
+    let ialt = 0;
     for (const s of valgt ? [valgt] : saloner) {
       const beh = behId ? s.behandlinger.find((b) => b.id === behId) : null;
       if (behId && !beh) { if (valgt) afsnit.push(`${s.navn}: har ikke behandlingen "${behId}".`); continue; }
@@ -462,10 +506,13 @@ async function kald(navn: string, a: Record<string, unknown>) {
       const linjer: string[] = [];
       for (const [d, dag] of await dage(s, fra, n)) {
         const t = startTider(s, dag, min).map((m) => iKbh(m).tid);
+        ialt += t.length;
         linjer.push(`  - ${danskDato(d)} (${d})${d === nu.dato ? ", i dag" : ""}: ${t.length ? t.join(", ") : "ingen ledige tider"}`);
       }
       afsnit.push(`${s.navn} (id: ${s.id}, ${s.omraade})${testMaerke(s)} – ${beh ? `${beh.navn}, ${beh.minutter} min, ${beh.pris} kr` : `korteste behandling, ${min} min`}:\n${linjer.join("\n")}`);
     }
+    const behKat = behId ? saloner.flatMap((s) => s.behandlinger).find((b) => b.id === behId)?.kategori : undefined;
+    await log({ type: "vis_ledige_tider", klient: k, salon: valgt?.id ?? "alle", behandling: behId ?? undefined, kategori: behKat, dageFrem: dageFra(fra), antal: ialt });
     if (!afsnit.length) return tekst(`Ingen saloner har behandlingen "${behId}".`, true);
     return tekst(`Ledige starttider (klokken i København er ${nu.tid}):\n${afsnit.join("\n\n")}`);
   }
@@ -480,15 +527,19 @@ async function kald(navn: string, a: Record<string, unknown>) {
     if (!kunde) return tekst("Kundens navn mangler.", true);
     const tlf = typeof a.telefon === "string" && a.telefon.trim() ? a.telefon.trim().slice(0, 20) : undefined;
     const r = await opretBooking(s, beh, dato, tid, kunde, tlf, "ai");
-    if (!r.ok) return tekst(r.fejl, true);
+    if (!r.ok) {
+      await log({ type: "booking_afvist", klient: k, kilde: "ai", salon: s.id, behandling: beh.id, kategori: beh.kategori, pris: beh.pris, dageFrem: dageFra(dato), grund: r.fejl.includes("taget") ? "taget lige før" : r.fejl.includes("bookes lige nu") ? "optaget" : "tid ikke ledig" });
+      return tekst(r.fejl, true);
+    }
+    await log({ type: "booking", klient: k, kilde: "ai", salon: s.id, behandling: beh.id, kategori: beh.kategori, pris: beh.pris, dageFrem: dageFra(dato) });
     return tekst(`Booket: ${beh.navn} hos ${s.navn} (${s.omraade})${testMaerke(s)}, ${danskDato(dato)} kl. ${tid}–${iKbh(lokalMs(dato, tid) + beh.minutter * 60000).tid}. ` +
       `Pris ${beh.pris} kr, betales i salonen.\nKunde: ${kunde}. Bookingkode: ${r.b.kode}.\nSe eller aflys: ${ORIGIN}/booking/${r.b.token}\nAdresse: ${s.adresse}.`);
   }
   if (navn === "aflys_booking") {
     const kode = String(a.bookingkode ?? "").trim().toUpperCase();
     const b = await findKode(kode);
-    if (!b) return tekst(`Fandt ingen booking med koden ${kode}.`, true);
-    await aflys(b);
+    if (!b) { await log({ type: "aflysning_ukendt_kode", klient: k }); return tekst(`Fandt ingen booking med koden ${kode}.`, true); }
+    await aflys(b, k, "ai");
     const s = await kget<Salon>(["salon", b.salon]);
     return tekst(`Bookingen ${kode} hos ${s?.navn ?? b.salon} (${danskDato(b.dato)} kl. ${b.tid}) er aflyst. Tiden er ledig igen.`);
   }
@@ -497,11 +548,19 @@ async function kald(navn: string, a: Record<string, unknown>) {
 
 // ---------- MCP (JSON-RPC over HTTP) ----------
 const PROTOKOLLER = ["2025-06-18", "2025-03-26", "2024-11-05"];
-async function haandter(msg: { id?: unknown; method?: string; params?: Record<string, unknown> }) {
+async function haandter(msg: { id?: unknown; method?: string; params?: Record<string, unknown> }, ctx: Ctx) {
   const svar = (result: unknown) => ({ jsonrpc: "2.0", id: msg.id, result });
   switch (msg.method) {
     case "initialize": {
       const oensket = String(msg.params?.protocolVersion ?? "");
+      const sid = crypto.randomUUID();
+      const klient = klientNavn(msg.params?.clientInfo, ctx.klient);
+      ctx.klient = klient; ctx.nySession = sid;
+      try {
+        if (kv) await kv.set(["sess", sid], { klient, start: new Date().toISOString() }, { expireIn: 7 * 86400000 });
+        else mem.set(memKey(["sess", sid]), { klient });
+      } catch { /* ignorér */ }
+      await log({ type: "forbindelse", klient });
       return svar({
         protocolVersion: PROTOKOLLER.includes(oensket) ? oensket : PROTOKOLLER[0],
         capabilities: { tools: { listChanged: false } },
@@ -513,7 +572,7 @@ async function haandter(msg: { id?: unknown; method?: string; params?: Record<st
     case "tools/list": return svar({ tools: await vaerktoejer() });
     case "tools/call": {
       const p = msg.params ?? {};
-      try { return svar(await kald(String(p.name), (p.arguments as Record<string, unknown>) ?? {})); }
+      try { return svar(await kald(String(p.name), (p.arguments as Record<string, unknown>) ?? {}, ctx)); }
       catch (e) { return svar(tekst(`Intern fejl: ${(e as Error).message}`, true)); }
     }
     default:
@@ -642,6 +701,115 @@ async function salonside(s: Salon, behId: string | null, besked = ""): Promise<R
 <button type="submit">Book tiden</button><p class="muted">Betaling sker hos salonen. Du får en bookingkode og et link til at aflyse.</p></form>`);
 }
 
+// ---------- Dashboard (kun anonyme tal fra hændelsesloggen) ----------
+const OPSLAG = ["find_saloner", "vis_behandlinger", "vis_ledige_tider"];
+async function salonNavne(): Promise<Map<string, string>> {
+  return new Map((await alleSaloner(true)).map((s) => [s.id, s.navn]));
+}
+async function hentLog(url: URL): Promise<{ log: Haendelse[]; periode: string; dage: number | null }> {
+  const p = url.searchParams.get("periode") ?? "30";
+  const dage = p === "alle" ? null : Math.max(1, Math.min(365, Number(p) || 30));
+  const alle = await klist<Haendelse>(["log"]);
+  const graense = dage ? Date.now() - dage * 86400000 : 0;
+  return { log: alle.filter((h) => Date.parse(h.t) >= graense).sort((a, b) => a.t.localeCompare(b.t)), periode: dage ? String(dage) : "alle", dage };
+}
+function opsummer(log: Haendelse[], dage: number | null, navne: Map<string, string> = new Map()) {
+  const sn = (id?: string) => (id ? navne.get(id) ?? id : "");
+  const tael = (f: (h: Haendelse) => boolean) => log.filter(f).length;
+  const kr = (f: (h: Haendelse) => boolean) => log.filter(f).reduce((s, h) => s + (h.pris ?? 0), 0);
+  const bookinger = tael((h) => h.type === "booking");
+  const aflysninger = tael((h) => h.type === "aflysning");
+  const samtaler = tael((h) => h.type === "forbindelse");
+  const aiBook = tael((h) => h.type === "booking" && h.kilde === "ai");
+  const tidSoeg = tael((h) => h.type === "vis_ledige_tider");
+  const grp = (noegle: (h: Haendelse) => string | undefined, filter: (h: Haendelse) => boolean = () => true) => {
+    const m = new Map<string, Haendelse[]>();
+    for (const h of log.filter(filter)) { const n = noegle(h); if (!n) continue; m.set(n, [...(m.get(n) ?? []), h]); }
+    return m;
+  };
+  const raekke = (l: Haendelse[]) => ({
+    opslag: l.filter((h) => OPSLAG.includes(h.type)).length,
+    tidssoegninger: l.filter((h) => h.type === "vis_ledige_tider").length,
+    bookinger: l.filter((h) => h.type === "booking").length,
+    aflysninger: l.filter((h) => h.type === "aflysning").length,
+    afvist: l.filter((h) => h.type === "booking_afvist").length,
+    kr: l.filter((h) => h.type === "booking").reduce((s, h) => s + (h.pris ?? 0), 0) - l.filter((h) => h.type === "aflysning").reduce((s, h) => s + (h.pris ?? 0), 0),
+  });
+  const pr = (m: Map<string, Haendelse[]>) => [...m.entries()].map(([navn, l]) => ({ navn, ...raekke(l), samtaler: l.filter((h) => h.type === "forbindelse").length }))
+    .sort((a, b) => b.bookinger - a.bookinger || b.opslag - a.opslag);
+  // Pr. dag
+  const n = dage ?? Math.max(1, Math.ceil((Date.now() - Date.parse(log[0]?.t ?? new Date().toISOString())) / 86400000) + 1);
+  const dagliste: { dato: string; opslag: number; bookinger: number }[] = [];
+  for (let i = Math.min(n, 60) - 1; i >= 0; i--) {
+    const d = iKbh(Date.now() - i * 86400000).dato;
+    const l = log.filter((h) => iKbh(Date.parse(h.t)).dato === d);
+    dagliste.push({ dato: d, opslag: l.filter((h) => OPSLAG.includes(h.type)).length, bookinger: l.filter((h) => h.type === "booking").length });
+  }
+  const ubesvaret = [
+    ...log.filter((h) => h.type === "find_saloner" && h.antal === 0).map((h) => `Søgte salon${h.kategori ? " med " + h.kategori : ""}${h.omraade ? " i " + h.omraade : ""} – ingen fundet`),
+    ...log.filter((h) => h.type === "vis_ledige_tider" && h.antal === 0).map((h) => `Ingen ledige tider${h.behandling ? " til " + h.behandling : ""} hos ${h.salon === "alle" ? "alle saloner" : sn(h.salon)}${h.dageFrem !== undefined ? `, ${h.dageFrem} dage frem` : ""}`),
+    ...log.filter((h) => h.type === "booking_afvist").map((h) => `Booking afvist hos ${sn(h.salon)} (${h.grund ?? "ukendt"})`),
+  ];
+  const leadtider = log.filter((h) => h.type === "booking" && typeof h.dageFrem === "number").map((h) => h.dageFrem!);
+  return {
+    samtaler, opslag: tael((h) => OPSLAG.includes(h.type)), tidssoegninger: tidSoeg, bookinger, aiBookinger: aiBook, aflysninger,
+    afvist: tael((h) => h.type === "booking_afvist"), sidevisninger: tael((h) => h.type === "sidevisning"),
+    bookingKr: kr((h) => h.type === "booking"), aflystKr: kr((h) => h.type === "aflysning"),
+    nettoKr: kr((h) => h.type === "booking") - kr((h) => h.type === "aflysning"),
+    soegTilBooking: tidSoeg ? Math.round((aiBook / tidSoeg) * 100) : null,
+    aflysningsandel: bookinger ? Math.round((aflysninger / bookinger) * 100) : null,
+    dageFremMedian: leadtider.length ? leadtider.sort((a, b) => a - b)[Math.floor(leadtider.length / 2)] : null,
+    prAssistent: pr(grp((h) => h.klient, (h) => h.klient !== "Bookingside")),
+    prSalon: pr(grp((h) => h.salon && h.salon !== "alle" ? sn(h.salon) : undefined)),
+    prKategori: pr(grp((h) => h.kategori)),
+    dage: dagliste, ubesvaret: ubesvaret.slice(-15).reverse(),
+    seneste: log.slice(-25).reverse().map(({ t, type, klient, salon, behandling, pris, antal }) => ({ t, type, klient, salon: salon === "alle" ? "alle" : sn(salon), behandling, pris, antal })),
+  };
+}
+async function dashboardJson(url: URL): Promise<Response> {
+  const { log, periode, dage } = await hentLog(url);
+  return Response.json({ periode, ...opsummer(log, dage, await salonNavne()) }, { headers: { "cache-control": "no-store", "access-control-allow-origin": "*" } });
+}
+const TYPENAVN: Record<string, string> = {
+  forbindelse: "Ny samtale", find_saloner: "Søgte saloner", vis_behandlinger: "Så behandlinger", vis_ledige_tider: "Søgte ledige tider",
+  booking: "Booking", booking_afvist: "Booking afvist", aflysning: "Aflysning", aflysning_ukendt_kode: "Aflysning – ukendt kode", sidevisning: "Bookingside vist",
+};
+const DASH_CSS = `html body{max-width:960px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.tile{background:var(--card);border-radius:12px;padding:12px 14px}.tile .v{font-size:1.7rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2}.tile .l{color:var(--muted);font-size:.85rem}
+.periode a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:999px;margin:0 4px 4px 0;text-decoration:none;color:var(--fg)}.periode a.valgt{background:var(--accent);border-color:var(--accent);color:#fff}
+.bars{display:flex;align-items:flex-end;gap:2px;height:120px;border-bottom:1px solid var(--line);margin-top:8px}.bars div{flex:1;background:var(--accent);border-radius:4px 4px 0 0;min-height:0}.bars div:hover{opacity:.75}
+.akse{display:flex;justify-content:space-between;color:var(--muted);font-size:.75rem;margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600}td.n,th.n{text-align:right}
+.tabwrap{overflow-x:auto}`;
+async function dashboard(url: URL): Promise<Response> {
+  const { log, periode, dage } = await hentLog(url);
+  const o = opsummer(log, dage, await salonNavne());
+  const tal = (n: number) => n.toLocaleString("da-DK");
+  const tile = (v: string, l: string) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const bars = (felt: "opslag" | "bookinger", titel: string) => {
+    const max = Math.max(1, ...o.dage.map((d) => d[felt]));
+    return `<div class="kort"><h2 style="margin:0">${titel}</h2><div class="bars" role="img" aria-label="${titel} pr. dag">` +
+      o.dage.map((d) => `<div style="height:${Math.round((d[felt] / max) * 100)}%" title="${danskDato(d.dato)}: ${d[felt]}"></div>`).join("") +
+      `</div><div class="akse"><span>${danskDato(o.dage[0].dato)}</span><span>i dag</span></div></div>`;
+  };
+  const tabel = (titel: string, raekker: ReturnType<typeof opsummer>["prSalon"], medSamtaler = false) => !raekker.length ? "" :
+    `<div class="kort tabwrap"><h2 style="margin-top:0">${titel}</h2><table><thead><tr><th></th>${medSamtaler ? '<th class="n">Samtaler</th>' : ""}<th class="n">Opslag</th><th class="n">Bookinger</th><th class="n">Aflyst</th><th class="n">Afvist</th><th class="n">Netto kr</th></tr></thead><tbody>` +
+    raekker.map((r) => `<tr><td>${esc(r.navn)}</td>${medSamtaler ? `<td class="n">${r.samtaler}</td>` : ""}<td class="n">${r.opslag}</td><td class="n">${r.bookinger}</td><td class="n">${r.aflysninger}</td><td class="n">${r.afvist}</td><td class="n">${tal(r.kr)}</td></tr>`).join("") + "</tbody></table></div>";
+  const vaelg = ["7", "30", "alle"].map((p) => `<a href="?periode=${p}" class="${p === periode ? "valgt" : ""}">${p === "alle" ? "Alt" : p + " dage"}</a>`).join("");
+  const krop = `${testBanner()}<p><a href="/">← ${esc(BRAND)}</a></p><h1>Dashboard</h1>
+<p class="muted">Anonyme tal fra forbindelsen: hvad AI-assistenterne slår op, booker og aflyser. Ingen navne, telefonnumre eller IP-adresser gemmes.</p>
+<nav class="periode" aria-label="Periode">${vaelg}</nav>
+<div class="tiles">${tile(tal(o.samtaler), "Samtaler med forbindelsen")}${tile(tal(o.opslag), "Opslag (saloner, priser, tider)")}${tile(tal(o.bookinger), `Bookinger (${o.aiBookinger} via AI)`)}${tile(tal(o.aflysninger), "Aflysninger" + (o.aflysningsandel !== null ? ` (${o.aflysningsandel} %)` : ""))}
+${tile(tal(o.nettoKr) + " kr", `Booket for netto (brutto ${tal(o.bookingKr)} kr)`)}${tile(o.soegTilBooking !== null ? o.soegTilBooking + " %" : "–", "Tidssøgninger der blev til en AI-booking")}${tile(tal(o.afvist), "Bookinger afvist (tid ikke ledig)")}${tile(o.dageFremMedian !== null ? o.dageFremMedian + " dage" : "–", "Typisk booket så langt frem")}</div>
+${bars("opslag", "Opslag pr. dag")}${bars("bookinger", "Bookinger pr. dag")}
+${tabel("Pr. assistent", o.prAssistent, true)}${tabel("Pr. salon", o.prSalon)}${tabel("Pr. kategori", o.prKategori)}
+${o.ubesvaret.length ? `<div class="kort"><h2 style="margin-top:0">Efterspørgsel uden svar</h2><ul>${o.ubesvaret.map((u) => `<li>${esc(u)}</li>`).join("")}</ul></div>` : ""}
+<div class="kort tabwrap"><h2 style="margin-top:0">Seneste hændelser</h2>${o.seneste.length ? `<table><thead><tr><th>Tid</th><th>Hvad</th><th>Hvem</th><th>Salon</th><th class="n">Pris</th></tr></thead><tbody>` +
+    o.seneste.map((h) => { const k = iKbh(Date.parse(h.t)); return `<tr><td style="white-space:nowrap">${k.dato.slice(8)}/${k.dato.slice(5,7)} ${k.tid}</td><td>${esc(TYPENAVN[h.type] ?? h.type)}${h.behandling ? " · " + esc(h.behandling) : ""}${typeof h.antal === "number" ? ` (${h.antal})` : ""}</td><td>${esc(h.klient)}</td><td>${esc(h.salon ?? "")}</td><td class="n">${h.pris && (h.type === "booking" || h.type === "aflysning") ? tal(h.pris) : ""}</td></tr>`; }).join("") + "</tbody></table>" : "<p>Ingen hændelser endnu.</p>"}</div>
+<p class="muted">Tallene starter 10. oktober 2026. "Samtaler" tælles, når en assistent kobler på forbindelsen – det er ikke antal unikke brugere. Rå tal: <a href="/dashboard.json?periode=${periode}">dashboard.json</a>.</p>`;
+  return html(`${BRAND} – dashboard`, krop, `<style>${DASH_CSS}</style><meta http-equiv="refresh" content="60">`);
+}
+
 if (typeof Deno.serve === "function") Deno.serve(async (req) => {
   const url = new URL(req.url);
   ORIGIN = url.origin.replace(/^http:\/\/(?!localhost|127\.)/, "https://");
@@ -651,9 +819,12 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       let body: unknown;
       try { body = await req.json(); } catch { return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 }); }
       const batch = Array.isArray(body) ? body : [body];
-      const res = (await Promise.all(batch.map(haandter))).filter((x) => x !== null);
-      if (!res.length) return new Response(null, { status: 202 });
-      return Response.json(Array.isArray(body) ? res : res[0]);
+      const ctx: Ctx = { klient: await klientForRequest(req) };
+      const res = [];
+      for (const m of batch) { const r = await haandter(m, ctx); if (r !== null) res.push(r); }
+      const hdr: Record<string, string> = ctx.nySession ? { "Mcp-Session-Id": ctx.nySession } : {};
+      if (!res.length) return new Response(null, { status: 202, headers: hdr });
+      return Response.json(Array.isArray(body) ? res : res[0], { headers: hdr });
     }
     if (url.pathname.startsWith("/admin/")) return await admin(req, url);
     const sm = url.pathname.match(/^\/s\/([a-z0-9-]+)(\/book)?$/);
@@ -667,9 +838,14 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
         const kunde = String(f.get("navn") ?? "").trim().slice(0, 60);
         if (!beh || !datoOk(dato ?? "") || !tidOk(tid ?? "") || !kunde) return salonside(s, beh?.id ?? null, `<p class="test">Vælg en tid og skriv dit navn.</p>`);
         const r = await opretBooking(s, beh, dato, tid, kunde, String(f.get("telefon") ?? "").trim().slice(0, 20) || undefined, "formular");
-        if (!r.ok) return salonside(s, beh.id, `<p class="test">${esc(r.fejl)}</p>`);
+        if (!r.ok) {
+          await log({ type: "booking_afvist", klient: "Bookingside", kilde: "formular", salon: s.id, behandling: beh.id, kategori: beh.kategori, pris: beh.pris, dageFrem: dageFra(dato), grund: "tid ikke ledig" });
+          return salonside(s, beh.id, `<p class="test">${esc(r.fejl)}</p>`);
+        }
+        await log({ type: "booking", klient: "Bookingside", kilde: "formular", salon: s.id, behandling: beh.id, kategori: beh.kategori, pris: beh.pris, dageFrem: dageFra(dato) });
         return html("Booket", `${testBanner(s)}<h1>Du er booket</h1><div class="kort"><p><strong>${esc(beh.navn)}</strong><br>${esc(s.navn)}, ${esc(s.omraade)}<br>${danskDato(dato)} kl. ${tid}<br>${beh.pris} kr, betales i salonen<br>Bookingkode: <strong>${r.b.kode}</strong></p></div><p><a href="/booking/${r.b.token}">Se eller aflys din booking</a> – gem linket.</p>`);
       }
+      if (!url.searchParams.get("b")) await log({ type: "sidevisning", klient: "Bookingside", salon: s.id });
       return await salonside(s, url.searchParams.get("b"));
     }
     const bm = url.pathname.match(/^\/booking\/([a-f0-9]{24})$/);
@@ -678,7 +854,7 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       if (!b) return html("Booking", `<h1>Bookingen findes ikke</h1><p>Den er måske allerede aflyst.</p>`);
       const s = await kget<Salon>(["salon", b.salon]);
       if (req.method === "POST") {
-        await aflys(b);
+        await aflys(b, "Bookingside", "link");
         return html("Aflyst", `${testBanner(s ?? undefined)}<h1>Aflyst</h1><p>Din tid hos ${esc(s?.navn ?? b.salon)} ${danskDato(b.dato)} kl. ${b.tid} er aflyst. Husk at slette aftalen i din egen kalender.</p>`);
       }
       const beh = s?.behandlinger.find((x) => x.id === b.behandling);
@@ -706,6 +882,8 @@ if (typeof Deno.serve === "function") Deno.serve(async (req) => {
       }
       return new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
+    if (url.pathname === "/dashboard") return await dashboard(url);
+    if (url.pathname === "/dashboard.json") return await dashboardJson(url);
     if (url.pathname === "/") return await forside();
     return new Response("Ikke fundet", { status: 404 });
   } catch (e) {
