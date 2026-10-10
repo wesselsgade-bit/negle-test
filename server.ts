@@ -875,7 +875,7 @@ const aiKort = (s?: Salon | null) => `<div class="kort"><h2 style="margin-top:0"
 
 // ---------- Privatlivspolitik (/privatliv og /privacy) ----------
 // Teksten skal passe til det, koden faktisk gør. Ret begge, hvis du ændrer dataene.
-const KONTAKT = env("KONTAKT_EMAIL") ?? "kontakt@bookbar.dk";
+const KONTAKT = env("KONTAKT_EMAIL") || "kontakt@bookbar.dk";
 const PRIVATLIV_OPDATERET = "10. oktober 2026";
 const PRIVACY_UPDATED = "10 October 2026";
 function privatlivSide(sprog: "da" | "en"): Response {
